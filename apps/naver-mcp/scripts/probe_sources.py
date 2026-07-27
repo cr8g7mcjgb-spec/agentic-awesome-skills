@@ -86,6 +86,41 @@ for label, url in [
         print(f"       sample  : {snippet}")
     print()
 
+# Visitor reviews - the star-rated ones - are the piece a restaurant tool
+# needs and the piece most likely to be client-rendered.
+print("=" * 78)
+print("PLACE VISITOR REVIEWS")
+print("=" * 78)
+
+place = discover("성수동 맛집", r"(?:place|pcmap\.place)\.naver\.com/restaurant/(\d+)")
+pid = re.search(r"(\d+)", place).group(1) if place else None
+print(f"discovered place id: {pid}\n")
+
+if pid:
+    candidates = [
+        ("m.place visitor", f"https://m.place.naver.com/restaurant/{pid}/review/visitor"),
+        ("m.place visitor (jina)", f"https://r.jina.ai/https://m.place.naver.com/restaurant/{pid}/review/visitor"),
+        ("pcmap visitor", f"https://pcmap.place.naver.com/restaurant/{pid}/review/visitor"),
+        ("m.place home (jina)", f"https://r.jina.ai/https://m.place.naver.com/restaurant/{pid}/home"),
+    ]
+    for label, url in candidates:
+        status, text, err = fetch(url, timeout=45)
+        hangul = len(re.findall(r"[가-힣]", text or ""))
+        # Star ratings and review verbs are what separate a real review list
+        # from the page shell.
+        signals = len(re.findall(r"별점|평점|방문자 리뷰|재방문|맛있|친절|웨이팅", text or ""))
+        verdict = "OK" if status == 200 and hangul > 500 and signals >= 3 else "NO CONTENT"
+        print(f"[{verdict}] {label}")
+        print(f"       url    : {url[:110]}")
+        print(f"       status : {status} err={err}")
+        print(f"       bytes  : {len(text or '')}, hangul={hangul}, review-signals={signals}")
+        if text and hangul > 200:
+            snip = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))
+            print(f"       sample : {snip[:220]}")
+        print()
+else:
+    print("[SKIP] no place id discovered\n")
+
 rows = []
 for label, url, pattern in TARGETS:
     status, text, err = fetch(url, referer="https://m.search.naver.com/")
