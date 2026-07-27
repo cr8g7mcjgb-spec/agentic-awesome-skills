@@ -62,6 +62,18 @@ const run = async () => {
   check("blog_read exposes max_chars",
     !!tools.find((t) => t.name === "naver_blog_read")?.inputSchema?.properties?.max_chars);
 
+  // Every advertised tool must be reachable through tools/call. Calling the
+  // functions directly (as the tool tests do) hides a missing HANDLERS entry:
+  // the tool lists fine and only fails when someone actually invokes it.
+  for (const t of tools) {
+    const required = t.inputSchema?.required || [];
+    // Deliberately invalid arguments - this checks routing, not behaviour.
+    const args = Object.fromEntries(required.map((k) => [k, ""]));
+    const res = await rpc("tools/call", { name: t.name, arguments: args });
+    const text = res.body?.result?.content?.[0]?.text || "";
+    check(`tools/call reaches ${t.name}`, !text.includes("Unknown tool"), text.slice(0, 50));
+  }
+
   // --- notifications ------------------------------------------------------
   const note = await worker.fetch(new Request("https://example.workers.dev/mcp", {
     method: "POST",

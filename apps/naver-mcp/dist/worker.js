@@ -1371,7 +1371,23 @@ const HANDLERS = {
   naver_news_read: naverNewsRead,
   naver_cafe_search: naverCafeSearch,
   naver_place_reviews: naverPlaceReviews,
+  naver_web_search: naverWebSearch,
+  naver_restaurant_reviews: naverRestaurantReviews,
+  read_article: readArticle,
 };
+
+// Advertising a tool with no handler produces "Unknown tool" only when someone
+// calls it, which is long after the mistake is visible. Fail at load instead.
+for (const t of TOOLS) {
+  if (typeof HANDLERS[t.name] !== "function") {
+    throw new Error(`Tool "${t.name}" is listed but has no handler`);
+  }
+}
+for (const name of Object.keys(HANDLERS)) {
+  if (!TOOLS.some((t) => t.name === name)) {
+    throw new Error(`Handler "${name}" has no entry in TOOLS`);
+  }
+}
 
 /** Turn an internal error into text that tells the model what to do next. */
 function describeFailure(err) {
