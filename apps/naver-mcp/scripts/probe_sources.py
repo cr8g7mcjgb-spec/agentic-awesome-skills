@@ -40,10 +40,15 @@ TARGETS = [
      r"소비자|kca"),
 ]
 
-def discover(query, pattern):
-    """Find a live URL through Naver's web tab instead of hardcoding one."""
+def discover(query, pattern, tab="tab.m_web.all"):
+    """Find a live URL through Naver search instead of hardcoding one.
+
+    Place cards only appear on the integrated results page, not the web tab,
+    so the caller has to say which surface to look at.
+    """
+    tab_param = f"ssc={tab}&" if tab else ""
     _, text, _ = fetch(
-        f"https://m.search.naver.com/search.naver?ssc=tab.m_web.all&query={urllib.parse.quote(query)}",
+        f"https://m.search.naver.com/search.naver?{tab_param}query={urllib.parse.quote(query)}",
         referer="https://m.search.naver.com/",
     )
     m = re.search(pattern, text or "")
@@ -92,7 +97,11 @@ print("=" * 78)
 print("PLACE VISITOR REVIEWS")
 print("=" * 78)
 
-place = discover("성수동 맛집", r"(?:place|pcmap\.place)\.naver\.com/restaurant/(\d+)")
+place = discover(
+    "성수동 맛집",
+    r"(?:place|pcmap\.place)\.naver\.com/(?:restaurant|place)/(\d+)",
+    tab=None,  # integrated results page - the web tab has no place cards
+)
 pid = re.search(r"(\d+)", place).group(1) if place else None
 print(f"discovered place id: {pid}\n")
 
