@@ -1,0 +1,675 @@
+<title>Inflate Render — physical balloon / pillow lettering</title>
+<style>
+  :root{--ui-bg:#0f0f12;--ui-panel:#17171c;--ui-line:#2b2b33;--ui-fg:#e9e9ee;--ui-dim:#8a8a95;--ui-accent:#ff7a6e}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:12px/1.5 ui-sans-serif,system-ui,"Liberation Sans",sans-serif}
+  .app{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:100vh}
+  @media (max-width:860px){.app{grid-template-columns:1fr}}
+  .panel{background:var(--ui-panel);border-right:1px solid var(--ui-line);padding:16px;
+         display:flex;flex-direction:column;gap:13px;max-height:100vh;overflow:auto}
+  .panel h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:0}
+  .panel h1 small{display:block;color:var(--ui-dim);letter-spacing:.03em;text-transform:none;font-weight:400;margin-top:4px}
+  fieldset{border:1px solid var(--ui-line);border-radius:8px;padding:10px;margin:0}
+  legend{color:var(--ui-dim);letter-spacing:.12em;text-transform:uppercase;font-size:10px;padding:0 4px}
+  label{display:grid;grid-template-columns:1fr 48px;align-items:center;gap:6px;margin:7px 0}
+  label>span{color:var(--ui-dim)}
+  label>output{color:var(--ui-accent);text-align:right;font-variant-numeric:tabular-nums}
+  input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--ui-accent);margin:0}
+  input[type=color]{width:100%;height:26px;padding:0;border:1px solid var(--ui-line);border-radius:5px;background:none}
+  textarea,select,input[type=text]{width:100%;background:#0c0c10;color:var(--ui-fg);border:1px solid var(--ui-line);
+    border-radius:6px;padding:7px;font:inherit}
+  textarea{resize:vertical;min-height:58px;letter-spacing:.04em}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .presets{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  button{background:#212129;color:var(--ui-fg);border:1px solid var(--ui-line);border-radius:6px;
+         padding:8px 6px;cursor:pointer;font:inherit;line-height:1.25}
+  button:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
+  button.primary{background:var(--ui-accent);color:#16100f;border-color:var(--ui-accent);font-weight:700}
+  .check{display:flex;align-items:center;gap:8px;margin:7px 0}
+  .check input{accent-color:var(--ui-accent)}
+  .stage{display:grid;place-items:center;padding:22px;position:relative;
+         background:repeating-conic-gradient(#151519 0 25%,#101014 0 50%) 0 0/24px 24px}
+  canvas{width:min(80vh,100%);height:auto;display:block;box-shadow:0 26px 70px #000a}
+  #busy{position:absolute;top:14px;right:18px;background:#000c;border:1px solid var(--ui-line);
+        border-radius:999px;padding:5px 12px;color:var(--ui-accent);opacity:0;transition:.15s}
+  #busy.on{opacity:1}
+</style>
+
+<div class="app">
+<aside class="panel">
+  <h1>Inflate Render<small>거리변환 높이맵 + 픽셀 단위 재질 셰이딩. 글자마다 독립된 물체로 부풀리고 서로 그림자를 드리웁니다.</small></h1>
+
+  <fieldset><legend>Material preset</legend>
+    <div class="presets">
+      <button data-preset="mylar">MYLAR 코랄 풍선</button>
+      <button data-preset="enamel">ENAMEL 세이지</button>
+      <button data-preset="latex">LATEX 레드</button>
+      <button data-preset="canvas">CANVAS 쿠션</button>
+      <button data-preset="plaster">PLASTER 음각</button>
+      <button data-preset="chromeb">CHROME 벌룬</button>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>Text &amp; layout</legend>
+    <textarea id="txt" spellcheck="false"></textarea>
+    <label><span>줄 채우기</span><output id="fitO"></output>
+      <input type="range" id="fit" min="0.4" max="1" step="0.01"></label>
+    <label><span>가로 겹침</span><output id="ovO"></output>
+      <input type="range" id="ov" min="0" max="0.45" step="0.01"></label>
+    <label><span>세로 겹침</span><output id="rovO"></output>
+      <input type="range" id="rov" min="-0.1" max="0.45" step="0.01"></label>
+    <label><span>글자 회전 흔들림</span><output id="jrO"></output>
+      <input type="range" id="jr" min="0" max="14" step="0.5"></label>
+    <label><span>위치 흔들림</span><output id="jpO"></output>
+      <input type="range" id="jp" min="0" max="40" step="1"></label>
+    <label><span>시드</span><output id="seedO"></output>
+      <input type="range" id="seed" min="1" max="40" step="1"></label>
+    <label><span>살 붙이기</span><output id="fatO"></output>
+      <input type="range" id="fat" min="0" max="70" step="1"></label>
+  </fieldset>
+
+  <fieldset><legend>Inflation</legend>
+    <label><span>부풂 반경</span><output id="infO"></output>
+      <input type="range" id="inf" min="6" max="90" step="1"></label>
+    <label><span>중앙 팽창</span><output id="bulgeO"></output>
+      <input type="range" id="bulge" min="0" max="1.2" step="0.02"></label>
+    <label><span>단면 팽팽함</span><output id="tautO"></output>
+      <input type="range" id="taut" min="0.6" max="4" step="0.05"></label>
+    <label><span>이음매 깊이</span><output id="seamO"></output>
+      <input type="range" id="seam" min="0" max="1" step="0.02"></label>
+    <label><span>주름 세기</span><output id="crimpO"></output>
+      <input type="range" id="crimp" min="0" max="1" step="0.02"></label>
+    <label><span>주름 간격</span><output id="cfreqO"></output>
+      <input type="range" id="cfreq" min="6" max="60" step="1"></label>
+    <label><span>속밀림(터프팅)</span><output id="tuftO"></output>
+      <input type="range" id="tuft" min="0" max="1" step="0.02"></label>
+    <label class="check"><input type="checkbox" id="deboss"><span>음각(눌러 찍기)</span></label>
+  </fieldset>
+
+  <fieldset><legend>Material</legend>
+    <div class="row">
+      <div><span style="color:var(--ui-dim)">본체</span><input type="color" id="base"></div>
+      <div><span style="color:var(--ui-dim)">그늘</span><input type="color" id="shade"></div>
+    </div>
+    <label style="margin-top:8px"><span>광택</span><output id="glossO"></output>
+      <input type="range" id="gloss" min="0" max="2.5" step="0.02"></label>
+    <label><span>하이라이트 좁기</span><output id="shinO"></output>
+      <input type="range" id="shin" min="4" max="160" step="2"></label>
+    <label><span>환경 반사</span><output id="envO"></output>
+      <input type="range" id="env" min="0" max="1.2" step="0.02"></label>
+    <label><span>테두리 빛(프레넬)</span><output id="fresO"></output>
+      <input type="range" id="fres" min="0" max="1.5" step="0.02"></label>
+    <label><span>표면 거칠기</span><output id="roughO"></output>
+      <input type="range" id="rough" min="0" max="1" step="0.02"></label>
+    <label><span>섬유 결</span><output id="fiberO"></output>
+      <input type="range" id="fiber" min="0" max="1" step="0.02"></label>
+    <label><span>광원 방향</span><output id="lazO"></output>
+      <input type="range" id="laz" min="0" max="360" step="5"></label>
+    <label><span>광원 높이</span><output id="lelO"></output>
+      <input type="range" id="lel" min="5" max="88" step="1"></label>
+  </fieldset>
+
+  <fieldset><legend>Scene</legend>
+    <div class="row">
+      <div><span style="color:var(--ui-dim)">배경 위</span><input type="color" id="bg1"></div>
+      <div><span style="color:var(--ui-dim)">배경 아래</span><input type="color" id="bg2"></div>
+    </div>
+    <label style="margin-top:8px"><span>그림자 세기</span><output id="shadO"></output>
+      <input type="range" id="shad" min="0" max="1" step="0.02"></label>
+    <label><span>그림자 번짐</span><output id="sblurO"></output>
+      <input type="range" id="sblur" min="1" max="60" step="1"></label>
+    <label><span>그림자 방향</span><output id="soffO"></output>
+      <input type="range" id="soff" min="0" max="60" step="1"></label>
+    <label><span>아웃포커스</span><output id="dofO"></output>
+      <input type="range" id="dof" min="0" max="26" step="1"></label>
+    <label><span>초점 위치</span><output id="focO"></output>
+      <input type="range" id="foc" min="0" max="1" step="0.02"></label>
+    <label><span>그레인</span><output id="grainO"></output>
+      <input type="range" id="grain" min="0" max="0.3" step="0.01"></label>
+  </fieldset>
+
+  <button class="primary" id="png">PNG 내보내기 (2160×2700)</button>
+</aside>
+
+<main class="stage">
+  <canvas id="cv" width="1080" height="1350"></canvas>
+  <div id="busy">렌더링…</div>
+</main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const W = 1080, H = 1350;
+
+/* =====================================================================
+   프리셋 — 사진 레퍼런스 다섯 장에 각각 대응
+===================================================================== */
+const PRESETS = {
+  /* 코랄색 마일라 풍선 레터링 (사막 하늘 배경) */
+  mylar: {
+    txt:"SO\nSHE\nLOVE", fit:0.94, ov:0.16, rov:0.14, jr:4, jp:14, seed:7, fat:34,
+    inf:62, bulge:0.62, taut:2.0, seam:0.72, crimp:0.62, cfreq:17, tuft:0.18, deboss:false,
+    base:"#e4635c", shade:"#7d2320", gloss:1.5, shin:46, env:0.72, fres:0.85,
+    rough:0.06, fiber:0, laz:120, lel:52,
+    bg1:"#c9c6d6", bg2:"#8d7d72", shad:0.55, sblur:26, soff:16, dof:6, foc:0.55, grain:0.06
+  },
+  /* 광택 에나멜 세이지 — NOVEMBER 포스터 */
+  enamel: {
+    txt:"NOVE\nMBER\n27", fit:0.97, ov:0.1, rov:0.16, jr:2, jp:8, seed:12, fat:26,
+    inf:40, bulge:0.5, taut:1.7, seam:0.4, crimp:0.14, cfreq:24, tuft:0.1, deboss:false,
+    base:"#9fae94", shade:"#4f5b48", gloss:1.35, shin:64, env:0.42, fres:0.7,
+    rough:0.04, fiber:0, laz:135, lel:58,
+    bg1:"#93a189", bg2:"#8b9880", shad:0.42, sblur:30, soff:14, dof:16, foc:0.62, grain:0.07
+  },
+  /* 진한 레드 라텍스 — ANXIETY 포스터 */
+  latex: {
+    txt:"ANX\nIE\nTY", fit:0.9, ov:0.14, rov:0.1, jr:5, jp:16, seed:21, fat:40,
+    inf:64, bulge:0.7, taut:2.2, seam:0.5, crimp:0.3, cfreq:20, tuft:0.2, deboss:false,
+    base:"#c8110e", shade:"#2c0100", gloss:2.1, shin:96, env:0.34, fres:0.6,
+    rough:0.03, fiber:0, laz:110, lel:46,
+    bg1:"#d81613", bg2:"#7d0402", shad:0.72, sblur:22, soff:10, dof:0, foc:0.5, grain:0.05
+  },
+  /* 광목 쿠션 — 봉제 오브제 */
+  canvas: {
+    txt:"SOFT\nWORK\nSHOP", fit:0.96, ov:0.2, rov:0.2, jr:7, jp:22, seed:3, fat:38,
+    inf:56, bulge:0.55, taut:1.5, seam:0.62, crimp:0.2, cfreq:26, tuft:0.55, deboss:false,
+    base:"#e6dcc6", shade:"#9c8f74", gloss:0.28, shin:10, env:0.12, fres:0.3,
+    rough:0.5, fiber:0.7, laz:125, lel:62,
+    bg1:"#fbfbf9", bg2:"#eceae4", shad:0.5, sblur:20, soff:12, dof:0, foc:0.5, grain:0.1
+  },
+  /* 석고 음각 — 눌러 찍은 글자 */
+  plaster: {
+    txt:"THE\nTOWER\nSTANDS\nIN THE\nSHADOW", fit:0.86, ov:0.12, rov:0.18, jr:3, jp:12, seed:9, fat:14,
+    inf:24, bulge:0.3, taut:1.3, seam:0.2, crimp:0.06, cfreq:30, tuft:0, deboss:true,
+    base:"#e7e0d2", shade:"#a79c88", gloss:0.14, shin:8, env:0.08, fres:0.2,
+    rough:0.62, fiber:0.3, laz:150, lel:34,
+    bg1:"#e9e2d4", bg2:"#ded6c6", shad:0.22, sblur:14, soff:6, dof:0, foc:0.5, grain:0.12
+  },
+  /* 크롬 풍선 */
+  chromeb: {
+    txt:"CHR\nOME", fit:0.94, ov:0.15, rov:0.12, jr:4, jp:12, seed:5, fat:36,
+    inf:66, bulge:0.65, taut:2.1, seam:0.6, crimp:0.4, cfreq:18, tuft:0.15, deboss:false,
+    base:"#c9d3dc", shade:"#20262e", gloss:2.3, shin:130, env:1.15, fres:1.2,
+    rough:0.02, fiber:0, laz:100, lel:50,
+    bg1:"#9fb6dd", bg2:"#d8c9ae", shad:0.5, sblur:24, soff:14, dof:4, foc:0.55, grain:0.05
+  }
+};
+
+const CTRL = {
+  txt:"value", fit:"n", ov:"n", rov:"n", jr:"n", jp:"n", seed:"n", fat:"n",
+  inf:"n", bulge:"n", taut:"n", seam:"n", crimp:"n", cfreq:"n", tuft:"n", deboss:"checked",
+  base:"value", shade:"value", gloss:"n", shin:"n", env:"n", fres:"n",
+  rough:"n", fiber:"n", laz:"n", lel:"n",
+  bg1:"value", bg2:"value", shad:"n", sblur:"n", soff:"n", dof:"n", foc:"n", grain:"n"
+};
+
+const read = () => Object.fromEntries(Object.entries(CTRL).map(([k, kind]) => {
+  const el = $(k);
+  return [k, kind === "n" ? parseFloat(el.value) : kind === "checked" ? el.checked : el.value];
+}));
+
+const hex = h => [parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255];
+
+/* =====================================================================
+   1. 정확한 유클리드 거리변환 (Felzenszwalb & Huttenlocher)
+      + 가장 가까운 경계점 좌표까지 함께 추적한다.
+      가우시안 블러가 아니라 이것을 써야 "팽팽한 막"의 단면이 나온다.
+===================================================================== */
+function edt1d(f, d, v, z, arg, n){
+  let k = 0;
+  v[0] = 0; z[0] = -1e20; z[1] = 1e20;
+  for (let q = 1; q < n; q++){
+    let s;
+    for(;;){
+      const p = v[k];
+      s = ((f[q] + q*q) - (f[p] + p*p)) / (2*q - 2*p);
+      if (k > 0 && s <= z[k]) k--; else break;
+    }
+    k++; v[k] = q; z[k] = s; z[k+1] = 1e20;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++){
+    while (z[k+1] < q) k++;
+    const p = v[k];
+    d[q] = (q-p)*(q-p) + f[p];
+    arg[q] = p;
+  }
+}
+
+function edt2d(mask, w, h){
+  const INF = 1e20;
+  const m = Math.max(w, h);
+  const f = new Float64Array(m), d = new Float64Array(m);
+  const v = new Int32Array(m), z = new Float64Array(m+1), arg = new Int32Array(m);
+  const g = new Float64Array(w*h), sy = new Int32Array(w*h);
+
+  for (let x = 0; x < w; x++){
+    for (let y = 0; y < h; y++) f[y] = mask[y*w + x] ? INF : 0;
+    edt1d(f, d, v, z, arg, h);
+    for (let y = 0; y < h; y++){ g[y*w + x] = d[y]; sy[y*w + x] = arg[y]; }
+  }
+  const dist = new Float32Array(w*h), SX = new Int32Array(w*h), SY = new Int32Array(w*h);
+  for (let y = 0; y < h; y++){
+    for (let x = 0; x < w; x++) f[x] = g[y*w + x];
+    edt1d(f, d, v, z, arg, w);
+    for (let x = 0; x < w; x++){
+      const i = y*w + x, xs = arg[x];
+      dist[i] = Math.sqrt(d[x]);
+      SX[i] = xs; SY[i] = sy[y*w + xs];
+    }
+  }
+  return { dist, SX, SY };
+}
+
+/* 빠른 박스 블러 3회 ≈ 가우시안. 그림자·아웃포커스용 */
+function boxBlur(src, w, h, r){
+  if (r < 1) return src;
+  let a = Float32Array.from(src), b = new Float32Array(w*h);
+  for (let pass = 0; pass < 3; pass++){
+    for (let y = 0; y < h; y++){
+      let sum = 0; const row = y*w;
+      for (let x = -r; x <= r; x++) sum += a[row + Math.min(w-1, Math.max(0, x))];
+      for (let x = 0; x < w; x++){
+        b[row + x] = sum / (2*r + 1);
+        sum += a[row + Math.min(w-1, x + r + 1)] - a[row + Math.max(0, x - r)];
+      }
+    }
+    for (let x = 0; x < w; x++){
+      let sum = 0;
+      for (let y = -r; y <= r; y++) sum += b[Math.min(h-1, Math.max(0, y))*w + x];
+      for (let y = 0; y < h; y++){
+        a[y*w + x] = sum / (2*r + 1);
+        sum += b[Math.min(h-1, y + r + 1)*w + x] - b[Math.max(0, y - r)*w + x];
+      }
+    }
+  }
+  return a;
+}
+
+const rng = s => { let x = s * 9301 + 49297; return () => (x = (x*9301 + 49297) % 233280) / 233280; };
+const hash2 = (x, y) => { const v = Math.sin(x*12.9898 + y*78.233) * 43758.5453; return v - Math.floor(v); };
+
+/* =====================================================================
+   2. 레이아웃 — 글자 하나하나가 독립된 물체
+===================================================================== */
+const glyphCv = document.createElement("canvas");
+glyphCv.width = W; glyphCv.height = H;
+const gctx = glyphCv.getContext("2d", { willReadFrequently: true });
+
+function layout(s){
+  const lines = s.txt.split("\n").filter(l => l.trim().length);
+  if (!lines.length) return [];
+  const rand = rng(s.seed);
+  const items = [];
+
+  // 각 줄을 지정 폭에 맞춘다 → 레퍼런스처럼 글자가 꽉 찬 블록이 된다.
+  // 부풀린 만큼 글리프 바깥으로 자라므로 그 여유를 미리 빼둔다.
+  const grow = s.inf + s.jp * 0.5;
+  const targetW = Math.max(120, W * s.fit - grow * 2);
+  const measured = lines.map(line => {
+    gctx.font = `900 200px 'Archivo Black','Arial Black',Impact,'Liberation Sans',sans-serif`;
+    const chars = [...line].filter(c => c !== " ");
+    const widths = [...line].map(c => gctx.measureText(c).width);
+    const advance = widths.reduce((a, b) => a + b, 0) * (1 - s.ov) + widths[widths.length-1] * s.ov;
+    return { chars: [...line], widths, advance };
+  });
+
+  let scales = measured.map(m => targetW / m.advance);
+  // 세로로 넘치면 전체를 균등 축소한다 — 안 그러면 글자가 캔버스를 뚫고 나간다
+  const rowHof = k => 200 * k * 0.78;
+  let stack = scales.reduce((a, k, i) => a + rowHof(k) * (i ? (1 - s.rov) : 1), 0);
+  const maxStack = H * 0.96 - grow * 2;
+  if (stack > maxStack){
+    const f = maxStack / stack;
+    scales = scales.map(k => k * f);
+    stack = maxStack;
+  }
+  const rowH = scales.map(rowHof);
+  let y = (H - stack) / 2;
+
+  measured.forEach((m, li) => {
+    const k = scales[li];
+    const size = 200 * k;
+    let x = (W - m.advance * k) / 2;
+    m.chars.forEach((ch, ci) => {
+      const adv = m.widths[ci] * k;
+      if (ch !== " "){
+        items.push({
+          ch, size,
+          x: x + adv/2 + (rand() - 0.5) * s.jp,
+          y: y + rowH[li] * 0.5 + (rand() - 0.5) * s.jp,
+          rot: (rand() - 0.5) * s.jr * Math.PI / 180,
+          // 겹칠 때 위로 올라올 순서 — 좌우 번갈아 쌓이면 실물 더미처럼 보인다
+          z: (li * 97 + ci * 31 + Math.floor(rand() * 5))
+        });
+      }
+      x += adv * (1 - s.ov);
+    });
+    y += rowH[li] * (1 - (li < measured.length - 1 ? s.rov : 0));
+  });
+
+  items.sort((a, b) => a.z - b.z);
+  return items;
+}
+
+/* =====================================================================
+   3. 환경맵 — 반사 벡터의 높이 성분으로 하늘/지면을 조회.
+      레퍼런스 풍선에 비치는 수평선이 여기서 나온다.
+===================================================================== */
+function envSample(ry, s, sky, ground){
+  // ry: -1 위(하늘) … +1 아래(지면)
+  const t = (ry + 1) * 0.5;
+  const hz = 0.52, band = 0.06;
+  if (t < hz - band) return sky;
+  if (t > hz + band) return ground;
+  const f = (t - (hz - band)) / (2 * band);
+  // 수평선 부근은 밝게 — 실제 반사에서 가장 눈에 띄는 특징
+  const glow = 1 + 0.9 * Math.sin(f * Math.PI);
+  return [
+    (sky[0]*(1-f) + ground[0]*f) * glow,
+    (sky[1]*(1-f) + ground[1]*f) * glow,
+    (sky[2]*(1-f) + ground[2]*f) * glow
+  ];
+}
+
+/* =====================================================================
+   4. 렌더
+===================================================================== */
+const cv = $("cv"), ctx = cv.getContext("2d");
+
+function render(){
+  const s = read();
+  for (const k of Object.keys(CTRL))
+    if (CTRL[k] === "n" && $(k + "O")) $(k + "O").value = s[k];
+
+  const R = new Float32Array(W*H), G = new Float32Array(W*H), B = new Float32Array(W*H);
+  const bgA = hex(s.bg1), bgB = hex(s.bg2);
+  for (let y = 0; y < H; y++){
+    const t = y / (H - 1);
+    const r = bgA[0]*(1-t) + bgB[0]*t, g = bgA[1]*(1-t) + bgB[1]*t, b = bgA[2]*(1-t) + bgB[2]*t;
+    for (let x = 0; x < W; x++){ const i = y*W + x; R[i] = r; G[i] = g; B[i] = b; }
+  }
+
+  const base = hex(s.base), dark = hex(s.shade);
+  const sky = [bgA[0]*1.05, bgA[1]*1.05, bgA[2]*1.1];
+  const ground = [bgB[0]*0.75, bgB[1]*0.72, bgB[2]*0.68];
+
+  const az = s.laz * Math.PI/180, el = s.lel * Math.PI/180;
+  const Lx = Math.cos(az)*Math.cos(el), Ly = -Math.sin(az)*Math.cos(el), Lz = Math.sin(el);
+  // 하프벡터 (뷰 = 정면 0,0,1)
+  const hx = Lx, hy = Ly, hz = Lz + 1;
+  const hl = Math.hypot(hx, hy, hz);
+  const Hx = hx/hl, Hy = hy/hl, Hz = hz/hl;
+  const sign = s.deboss ? -1 : 1;
+
+  const items = layout(s);
+
+  for (const it of items){
+    // --- 글리프 래스터화 ---
+    gctx.clearRect(0, 0, W, H);
+    gctx.save();
+    gctx.translate(it.x, it.y);
+    gctx.rotate(it.rot);
+    gctx.textAlign = "center";
+    gctx.textBaseline = "middle";
+    gctx.font = `900 ${it.size}px 'Archivo Black','Arial Black',Impact,'Liberation Sans',sans-serif`;
+    gctx.lineJoin = "round";
+    gctx.lineCap = "round";
+    gctx.strokeStyle = "#fff";
+    gctx.fillStyle = "#fff";
+    if (s.fat > 0){ gctx.lineWidth = s.fat * it.size / 300; gctx.strokeText(it.ch, 0, 0); }
+    gctx.fillText(it.ch, 0, 0);
+    gctx.restore();
+
+    // --- 처리 범위를 글자 주변으로 한정 ---
+    const pad = Math.ceil(s.inf * 1.4 + s.sblur * 3 + s.soff + 8);
+    const half = it.size * 0.95 + s.fat;
+    const x0 = Math.max(0, Math.floor(it.x - half - pad)), x1 = Math.min(W, Math.ceil(it.x + half + pad));
+    const y0 = Math.max(0, Math.floor(it.y - half - pad)), y1 = Math.min(H, Math.ceil(it.y + half + pad));
+    const bw = x1 - x0, bh = y1 - y0;
+    if (bw < 2 || bh < 2) continue;
+
+    const img = gctx.getImageData(x0, y0, bw, bh).data;
+    const mask = new Uint8Array(bw*bh);
+    let any = false;
+    for (let i = 0, p = 3; i < bw*bh; i++, p += 4){
+      if (img[p] > 127){ mask[i] = 1; any = true; }
+    }
+    if (!any) continue;
+
+    // --- 접촉 그림자: 이 글자가 아래 것들 위에 드리운다 ---
+    // 음각일 때는 표면보다 아래에 있으므로 바깥에 그림자를 드리우지 않는다.
+    // 뒤집힌 법선이 만드는 안쪽 그늘만으로 눌린 느낌이 난다.
+    if (s.shad > 0 && !s.deboss){
+      const sm = new Float32Array(bw*bh);
+      for (let i = 0; i < bw*bh; i++) sm[i] = mask[i];
+      const blurred = boxBlur(sm, bw, bh, Math.round(s.sblur));
+      const dx = Math.round(s.soff * 0.5), dy = Math.round(s.soff);
+      for (let y = 0; y < bh; y++){
+        for (let x = 0; x < bw; x++){
+          const sx = x - dx, sy2 = y - dy;
+          if (sx < 0 || sy2 < 0 || sx >= bw || sy2 >= bh) continue;
+          const a = Math.min(1, blurred[sy2*bw + sx] * 1.6) * s.shad;
+          if (a < 0.004) continue;
+          const i = (y + y0)*W + (x + x0);
+          const f = 1 - a;
+          R[i] *= f; G[i] *= f; B[i] *= f;
+        }
+      }
+    }
+
+    // --- 거리변환 → 높이 ---
+    const { dist, SX, SY } = edt2d(mask, bw, bh);
+    let dmax = 0;
+    for (let i = 0; i < bw*bh; i++) if (dist[i] > dmax) dmax = dist[i];
+    if (dmax < 1) continue;
+
+    const Rinf = Math.min(s.inf, dmax);
+    const hgt = new Float32Array(bw*bh);
+    for (let i = 0; i < bw*bh; i++){
+      if (!mask[i]) continue;
+      const d = dist[i];
+      const t = Math.min(1, d / Rinf);
+      // 가장자리 어깨: 팽팽한 막이라 급하게 솟았다가 금방 눕는다
+      let h = Rinf * Math.pow(1 - Math.pow(1 - t, s.taut), 1 / s.taut);
+      // 획 전체를 덮는 돔. 이게 없으면 두꺼운 획이 모서리만 둥근 평판이 된다
+      const u = d / dmax;
+      h += s.bulge * dmax * Math.sqrt(1 - (1 - u) * (1 - u));
+      hgt[i] = h;
+    }
+
+    // 거리장은 중심선(medial axis)에 각진 능선을 남긴다. 실제 풍선에는 없는
+    // 형태이므로 마스크 정규화 블러로 눌러 없앤다.
+    {
+      const r = Math.max(1, Math.round(Rinf * 0.2));
+      const mf = new Float32Array(bw*bh);
+      for (let i = 0; i < bw*bh; i++) mf[i] = mask[i];
+      const hb = boxBlur(hgt, bw, bh, r), mb = boxBlur(mf, bw, bh, r);
+      for (let i = 0; i < bw*bh; i++)
+        if (mask[i]) hgt[i] = hb[i] / Math.max(0.02, mb[i]);
+    }
+
+    // 이음매와 주름 — 경계 근처에서만 높이를 눌러 만든다
+    if (s.seam > 0 || s.crimp > 0){
+      const band = Rinf * 0.34;   // 용접 이음매는 좁다. 넓히면 줄무늬 벽지가 된다
+      for (let y = 1; y < bh-1; y++){
+        for (let x = 1; x < bw-1; x++){
+          const i = y*bw + x;
+          if (!mask[i]) continue;
+          const d = dist[i];
+          if (d > band) continue;
+          const w = Math.pow(1 - d / band, 2);
+
+          // 경계로부터의 방향 = 국소 법선, 그 수직이 이음매 접선
+          const px = SX[i], py = SY[i];
+          let gx = x - px, gy = y - py;
+          const gl = Math.hypot(gx, gy) || 1;
+          gx /= gl; gy /= gl;
+          // 접선 방향 좌표 ≈ 경계를 따라간 거리 → 일정 간격 주름
+          // 위상에 약간의 흔들림을 줘야 기계적인 줄무늬가 아니라 손으로 접힌 주름이 된다
+          const arc = (px * -gy + py * gx) + hash2(px * 0.07, py * 0.07) * s.cfreq * 0.5;
+          const crimp = 0.5 + 0.5 * Math.cos(arc / s.cfreq * Math.PI * 2);
+
+          hgt[i] -= w * (s.seam * Rinf * 0.3 + s.crimp * Rinf * 0.26 * crimp);
+        }
+      }
+    }
+
+    // 터프팅 — 가장 깊은 곳을 실로 당겨 눌러놓은 자국
+    if (s.tuft > 0){
+      let bi = -1;
+      for (let i = 0; i < bw*bh; i++) if (dist[i] === dmax){ bi = i; break; }
+      if (bi >= 0){
+        const tx = bi % bw, ty = (bi / bw) | 0;
+        const sg = Rinf * 0.55;
+        for (let y = Math.max(0, ty - 3*sg|0); y < Math.min(bh, ty + 3*sg); y++)
+          for (let x = Math.max(0, tx - 3*sg|0); x < Math.min(bw, tx + 3*sg); x++){
+            const i = y*bw + x;
+            if (!mask[i]) continue;
+            const r2 = ((x-tx)**2 + (y-ty)**2) / (sg*sg);
+            hgt[i] -= s.tuft * Rinf * 0.5 * Math.exp(-r2);
+          }
+      }
+    }
+
+    // --- 셰이딩 ---
+    for (let y = 1; y < bh-1; y++){
+      for (let x = 1; x < bw-1; x++){
+        const i = y*bw + x;
+        if (!mask[i]) continue;
+
+        let nx = -(hgt[i+1] - hgt[i-1]) * 0.5 * sign;
+        let ny = -(hgt[i+bw] - hgt[i-bw]) * 0.5 * sign;
+        let nz = 1;
+
+        if (s.rough > 0 || s.fiber > 0){
+          const gx = x + x0, gy = y + y0;
+          nx += (hash2(gx*0.9, gy*0.9) - 0.5) * s.rough * 0.9;
+          ny += (hash2(gx*0.9 + 31.7, gy*0.9 + 11.3) - 0.5) * s.rough * 0.9;
+          if (s.fiber > 0){
+            nx += (hash2(gx*0.16, gy*2.3) - 0.5) * s.fiber * 0.5;
+            ny += (hash2(gx*2.3, gy*0.16) - 0.5) * s.fiber * 0.5;
+          }
+        }
+        const nl = Math.hypot(nx, ny, nz);
+        nx /= nl; ny /= nl; nz /= nl;
+
+        const ndl = Math.max(0, nx*Lx + ny*Ly + nz*Lz);
+        const ndh = Math.max(0, nx*Hx + ny*Hy + nz*Hz);
+        const fres = Math.pow(1 - Math.min(1, nz), 4);
+
+        // 확산 — 어두운 쪽은 shade 색으로 넘어간다 (단순 검정보다 재질감이 산다)
+        const k = 0.22 + 0.78 * ndl;
+        let r = dark[0]*(1-k) + base[0]*k;
+        let g = dark[1]*(1-k) + base[1]*k;
+        let b = dark[2]*(1-k) + base[2]*k;
+
+        // 환경 반사 — 반사 벡터의 세로 성분으로 하늘/지면 조회
+        if (s.env > 0){
+          const rz = 2*nz*nz - 1;
+          const ryv = 2*nz*ny;
+          const e = envSample(Math.max(-1, Math.min(1, ryv + rz*0.15)), s, sky, ground);
+          const w = s.env * (0.28 + 0.72 * fres);
+          r = r*(1-w) + e[0]*w; g = g*(1-w) + e[1]*w; b = b*(1-w) + e[2]*w;
+        }
+
+        // 스페큘러
+        const sp = s.gloss * Math.pow(ndh, s.shin);
+        r += sp; g += sp; b += sp;
+
+        // 프레넬 테두리
+        const fr = s.fres * fres * 0.55;
+        r += fr; g += fr; b += fr;
+
+        // 섬유 얼룩
+        if (s.fiber > 0){
+          const gx = x + x0, gy = y + y0;
+          const sp2 = (hash2(gx*3.1, gy*3.1) - 0.5) * s.fiber * 0.09;
+          r += sp2; g += sp2; b += sp2;
+        }
+
+        const o = (y + y0)*W + (x + x0);
+        R[o] = r; G[o] = g; B[o] = b;
+      }
+    }
+  }
+
+  /* --- 아웃포커스: 흐린 사본과 세로 마스크로 섞는다 --- */
+  if (s.dof > 0){
+    const rb = boxBlur(R, W, H, Math.round(s.dof));
+    const gb = boxBlur(G, W, H, Math.round(s.dof));
+    const bb = boxBlur(B, W, H, Math.round(s.dof));
+    for (let y = 0; y < H; y++){
+      const t = Math.min(1, Math.abs(y/(H-1) - s.foc) * 2.4);
+      const w = t*t;
+      if (w < 0.004) continue;
+      for (let x = 0; x < W; x++){
+        const i = y*W + x;
+        R[i] = R[i]*(1-w) + rb[i]*w;
+        G[i] = G[i]*(1-w) + gb[i]*w;
+        B[i] = B[i]*(1-w) + bb[i]*w;
+      }
+    }
+  }
+
+  /* --- 출력 --- */
+  const out = ctx.createImageData(W, H);
+  const px = out.data;
+  for (let i = 0, p = 0; i < W*H; i++, p += 4){
+    let r = R[i], g = G[i], b = B[i];
+    if (s.grain > 0){
+      const n = (hash2(i % W, (i / W) | 0) - 0.5) * s.grain;
+      r += n; g += n; b += n;
+    }
+    px[p]   = Math.max(0, Math.min(255, r*255));
+    px[p+1] = Math.max(0, Math.min(255, g*255));
+    px[p+2] = Math.max(0, Math.min(255, b*255));
+    px[p+3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
+}
+
+/* --- 슬라이더를 끄는 동안 렌더가 밀리지 않도록 --- */
+let pending = false;
+function schedule(){
+  if (pending) return;
+  pending = true;
+  $("busy").classList.add("on");
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const t = performance.now();
+      try { render(); } finally {
+        pending = false;
+        $("busy").classList.remove("on");
+        if (performance.now() - t > 1200) console.log("render", Math.round(performance.now()-t), "ms");
+      }
+    });
+  });
+}
+
+function applyPreset(p){
+  for (const [k, kind] of Object.entries(CTRL)){
+    if (!(k in p)) continue;
+    if (kind === "checked") $(k).checked = p[k]; else $(k).value = p[k];
+  }
+  schedule();
+}
+
+$("png").onclick = () => {
+  const c = document.createElement("canvas");
+  c.width = W*2; c.height = H*2;
+  const c2 = c.getContext("2d");
+  c2.imageSmoothingQuality = "high";
+  c2.drawImage(cv, 0, 0, c.width, c.height);
+  const a = document.createElement("a");
+  a.href = c.toDataURL("image/png");
+  a.download = "inflate-render.png";
+  a.click();
+};
+
+document.querySelectorAll(".presets button").forEach(b =>
+  b.onclick = () => applyPreset(PRESETS[b.dataset.preset]));
+for (const key of Object.keys(CTRL)) $(key).addEventListener("input", schedule);
+applyPreset(PRESETS.mylar);
+</script>

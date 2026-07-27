@@ -1,6 +1,6 @@
 ---
 name: poster-typography-fx
-description: "Recreate trend poster typography — inflated 3D jelly type, liquid chrome, grainy gradient maps, and bitmap halftone — with pure SVG filters and canvas, no Photoshop or Illustrator."
+description: "Recreate trend poster typography — photoreal balloon/pillow lettering, liquid chrome, grainy gradient maps, and bitmap halftone — with a distance-transform material renderer and SVG filters, no Photoshop, Illustrator, or 3D software."
 category: design
 risk: safe
 source: self
@@ -15,11 +15,16 @@ tools: [claude, cursor, gemini]
 
 ## Overview
 
-Four production-ready generators that reproduce the poster typography styles that fill
-Pinterest and Behance moodboards — puffy inflated 3D lettering, melted liquid chrome,
-trippy grain-mapped gradients, and Illustrator-style bitmap halftone — using nothing but
-SVG filter primitives and a canvas sampling pass. No Photoshop, no Illustrator, no 3D
-software, no external libraries or fonts.
+Five production-ready generators that reproduce the poster typography styles that fill
+Pinterest and Behance moodboards — photoreal inflated balloon and stuffed-pillow lettering,
+melted liquid chrome, trippy grain-mapped gradients, and Illustrator-style bitmap halftone.
+No Photoshop, no Illustrator, no 3D software, no external libraries or fonts.
+
+Two engines sit underneath. When the reference is a *drawing*, SVG filter primitives do the
+job. When the reference is a *photograph of a real object*, filters cannot get there and a
+proper material renderer takes over: an exact distance transform gives the taut membrane
+profile, and each letter is shaded per pixel with environment reflection, seams, and contact
+shadows onto the letters beneath it.
 
 Each generator is a single self-contained HTML file with a live control panel and PNG/SVG
 export. The point is that the **material is separated from the content**: swap the word,
@@ -31,7 +36,9 @@ byte-identical.
 
 - Use when the user shares a reference poster or screenshot and asks to reproduce its
   typographic treatment ("이거랑 똑같이 만들어줘", "recreate this poster style")
-- Use when you need inflated / jelly / balloon / 3D-looking type without a 3D renderer
+- Use when you need inflated / jelly / balloon / stuffed / debossed type without a 3D renderer
+- Use when a previous attempt "looks similar but the material is wrong" — that is the
+  signal to move from the filter templates to the material renderer
 - Use when you need chrome, liquid metal, or Y2K melted lettering
 - Use when you need grainy gradient backgrounds, gradient maps, or noise-textured posters
 - Use when you need halftone, bitmap dithering, or riso-print dot screens as **vectors**
@@ -44,14 +51,54 @@ byte-identical.
 
 | Reference look | File | Core technique |
 | --- | --- | --- |
-| Puffy jelly / balloon / inflated type | `templates/inflate-type.html` | `feSpecularLighting` + `feDiffuseLighting` over a thresholded blur |
+| **Photographed** balloon, pillow, latex, debossed plaster | `templates/inflate-render.html` | distance-transform height field + per-pixel material shading |
+| Flat vector jelly type, quick web headline | `templates/inflate-type.html` | `feSpecularLighting` + `feDiffuseLighting` over a thresholded blur |
 | Liquid chrome, melted metal, Y2K | `templates/chrome-liquid.html` | banded `feComponentTransfer` ramp + `feDisplacementMap` |
 | Trippy gradient, grain, aura blobs | `templates/grain-gradient.html` | gradient map via lookup tables + `feTurbulence` grain |
 | Bitmap halftone, dot screen, riso | `templates/halftone-bitmap.html` | canvas luminance sampling → vector dot path |
 
 Open the file in any browser. No build step, no server, no dependencies.
 
-### Step 2: Understand the inflate pipeline
+### Step 2: Match a *photograph* — use the material renderer, not the filters
+
+When the reference is a photo of a real object — mylar balloons, stuffed canvas letters,
+glossy latex, letters pressed into plaster — SVG filters will not get you there, and no
+amount of parameter tuning fixes it. A Gaussian blur of the glyph alpha produces a soft
+mound whose slope is steepest at the centre. A real inflated membrane is the opposite: it
+rises fast at the welded edge and flattens across the middle. That single difference is
+why filter-based attempts read as "cartoon gradient" instead of "photographed object".
+
+`inflate-render.html` builds the height field from an **exact Euclidean distance
+transform** instead:
+
+```js
+const t = Math.min(1, d / R);                                   // d = distance to the letter edge
+let h = R * Math.pow(1 - Math.pow(1 - t, taut), 1 / taut);      // taut shoulder, flat crown
+h += bulge * dmax * Math.sqrt(1 - (1 - d/dmax) ** 2);           // whole-stroke dome
+```
+
+Four more things separate it from a filter, and all four are visible in the references:
+
+1. **Every letter is its own object.** Letters are laid out overlapping, sorted back to
+   front, and each one darkens what is already on the canvas with its own blurred,
+   offset mask before being drawn. That contact shadow in the gaps is most of the realism.
+2. **Seams and crimps.** The distance transform also returns the nearest edge pixel, so a
+   local along-the-seam coordinate is available: with `g` the unit vector from that edge
+   point to the current pixel, `arc = px * -g.y + py * g.x` advances one unit per pixel
+   along the boundary. Feed it to a cosine and the welded crimps of a mylar balloon appear
+   at the right spacing, breaking naturally at corners.
+3. **Environment reflection.** Reflect the view vector about the normal and look up a
+   two-tone sky/ground ramp by its vertical component. The bright horizon line sliding
+   across the balloons is the single most recognisable cue that the surface is glossy.
+4. **The medial axis must be smoothed away.** A raw distance field has sharp roof-like
+   ridges along the letter's skeleton — a V will show a hard crease down its middle. Run a
+   mask-normalised blur (`blur(h·mask) / blur(mask)`) over the height before shading.
+
+Material presets then differ only in shading terms: high specular plus strong environment
+for mylar, wide dim specular plus fibre noise on the normal for stuffed canvas, and for
+debossed plaster simply negate the normal and skip the outward shadow.
+
+### Step 3: Understand the inflate pipeline (flat vector version)
 
 Every "3D" look here comes from one idea: **an alpha channel is a height map**. Blur the
 glyph, hard-threshold it into a fat rounded silhouette, blur that again, then hand it to
@@ -108,7 +155,7 @@ Fat rounded letterforms come from stroking the text with its own fill colour and
       stroke-linejoin="round" paint-order="stroke fill">POP?</text>
 ```
 
-### Step 3: Understand the chrome ramp
+### Step 4: Understand the chrome ramp
 
 Chrome is the inflate pipeline with the shading replaced by an **oscillating transfer
 table**. A monotonic light response becomes alternating light/dark bands — which is exactly
@@ -132,7 +179,7 @@ For the bands to sweep across the letter body — not just hug its edges — the
 must be blurred *hard* (`stdDeviation` around 40 at a 300px cap height). A small blur
 leaves a flat plateau inside the glyph and the metal reads as a flat fill with a chrome rim.
 
-### Step 4: Understand the gradient map
+### Step 5: Understand the gradient map
 
 A gradient map is a per-channel lookup table. Desaturate, then remap brightness onto a
 colour ramp. Repeating the ramp more than once over the 0–1 range is what produces the
@@ -151,7 +198,7 @@ Grain needs two layers. `mix-blend-mode: overlay` only bites in the midtones, so
 poster looks clean where the reference is speckled; add a second `feTurbulence` rect in
 `screen` mode at roughly a quarter of the opacity to bring grain into the shadows.
 
-### Step 5: Understand the halftone screen
+### Step 6: Understand the halftone screen
 
 Halftone is not a filter — it is a resampling. Draw the artwork into an offscreen canvas
 in greyscale, walk a rotated grid, and emit one dot per cell sized by local darkness.
@@ -174,7 +221,7 @@ for (let v = -reach; v <= reach; v++)
 Dot size varies only if the source varies. Fill the artwork with a gradient before
 screening it — a flat black shape screens to a uniform grid of identical dots.
 
-### Step 6: Swap the content, keep the material
+### Step 7: Swap the content, keep the material
 
 This is the whole point of the split. In `halftone-bitmap.html` every shape is a list of
 path ops in a 100×100 box:
@@ -246,15 +293,20 @@ SHAPES.pineapple = [
   with a small blur first or the metal looks corroded
 - ❌ Don't rely on a font being installed; stroke-fatten instead of trusting `font-weight: 900`
 - ❌ Don't put a huge blur on the full-page grain rect — filter cost scales with area
+- ❌ Don't reach for the SVG filter template when the reference is a photograph of a real
+  object; start from `inflate-render.html` instead
 
 ## Limitations
 
 - Reproduces the *technique*, not a specific artist's file. Reference posters are matched
   by construction (lighting model, ramp, screen), not pixel-for-pixel, and the exact
   letterforms depend on which fonts are installed on the viewing machine.
-- Photographic references — real inflatable balloons in a subway car, physical prints,
-  studio-lit objects — can only be approximated. The template gives the material, not the
-  photograph.
+- `inflate-render.html` is a 2.5D renderer: it shades a height field, so it has no true
+  self-reflection, refraction, or cast shadows onto a receding floor. It matches
+  head-on product-style photography closely and cannot match a perspective scene.
+- A full 1080×1350 render is a per-pixel JavaScript pass. Expect a few hundred
+  milliseconds to a couple of seconds depending on letter count, so it repaints on release
+  rather than continuously during a slider drag.
 - SVG filter rendering differs slightly between Chromium, Firefox, and WebKit, most
   visibly in `feSpecularLighting` falloff. Verify in the target browser before shipping.
 - Large filter regions on full-page elements are expensive; on low-end mobile a 1080×1920
@@ -290,6 +342,15 @@ SHAPES.pineapple = [
   **Solution:** The source is a flat fill. Add a gradient, or turn on 글자 그라디언트.
 - **Problem:** Grain is invisible on a dark poster.
   **Solution:** `overlay` blend does nothing near black. Add a `screen` grain layer.
+- **Problem:** Inflated letters look like flat plates with bevelled edges.
+  **Solution:** The taut profile saturates once `d > R`, so thick strokes go flat. Raise
+  중앙 팽창 (`bulge`) — it adds a dome across the whole stroke rather than only the rim.
+- **Problem:** A hard crease runs down the middle of V, W, or A.
+  **Solution:** That is the distance field's medial axis. Increase the mask-normalised
+  height blur radius.
+- **Problem:** Seam crimps look like machine-printed stripes.
+  **Solution:** The seam band is too wide. Keep it under about a third of the inflation
+  radius and keep a little noise in the crimp phase.
 - **Problem:** PNG export produces a blank image.
   **Solution:** The SVG must be self-contained. Any external reference — a remote font, an
   `<image href>` to another file — makes the browser refuse to rasterise it.
