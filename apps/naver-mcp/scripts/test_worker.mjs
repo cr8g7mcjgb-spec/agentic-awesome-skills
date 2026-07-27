@@ -7,7 +7,11 @@
  * pasteable bundle works rather than only the module sources.
  */
 
-import worker from "../dist/worker.js";
+// Which build to drive. The minified bundle ships to people pasting into the
+// dashboard editor, so it has to pass the same checks as the readable one.
+const target = process.argv[2] || "../dist/worker.js";
+const worker = (await import(target.startsWith(".") ? target : `../${target}`)).default;
+console.log(`driving: ${target}\n`);
 
 let failures = 0;
 const rows = [];

@@ -82,9 +82,18 @@ jobs:
         working-directory: apps/naver-mcp
         run: node scripts/bundle.mjs
 
-      - name: Drive the bundled Worker over JSON-RPC
+      - name: Build the minified bundle
         working-directory: apps/naver-mcp
-        run: node scripts/test_worker.mjs
+        run: |
+          npm install --no-audit --no-fund --silent esbuild
+          npx esbuild src/index.js --bundle --format=esm --target=es2022 \
+            --minify --outfile=dist/worker.min.js
+
+      - name: Drive both bundles over JSON-RPC
+        working-directory: apps/naver-mcp
+        run: |
+          node scripts/test_worker.mjs dist/worker.js
+          node scripts/test_worker.mjs dist/worker.min.js
 
       - name: Confirm the committed bundle matches src
         working-directory: apps/naver-mcp
