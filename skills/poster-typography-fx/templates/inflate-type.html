@@ -1,0 +1,429 @@
+<title>Inflate Type — puffy 3D typography</title>
+<style>
+  :root{
+    --ui-bg:#111114; --ui-panel:#18181d; --ui-line:#2c2c34;
+    --ui-fg:#e8e8ec; --ui-dim:#8b8b96; --ui-accent:#c8ff3c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ui-bg);color:var(--ui-fg);
+       font:12px/1.5 ui-sans-serif,system-ui,"Liberation Sans",sans-serif}
+  .app{display:grid;grid-template-columns:296px minmax(0,1fr);min-height:100vh}
+  @media (max-width:820px){.app{grid-template-columns:1fr}}
+
+  /* ---------- control panel ---------- */
+  .panel{background:var(--ui-panel);border-right:1px solid var(--ui-line);
+         padding:16px;display:flex;flex-direction:column;gap:14px;
+         max-height:100vh;overflow:auto}
+  .panel h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:0}
+  .panel h1 small{display:block;color:var(--ui-dim);letter-spacing:.04em;
+                  text-transform:none;font-weight:400;margin-top:4px}
+  fieldset{border:1px solid var(--ui-line);border-radius:8px;padding:10px;margin:0}
+  legend{color:var(--ui-dim);letter-spacing:.12em;text-transform:uppercase;font-size:10px;padding:0 4px}
+  label{display:grid;grid-template-columns:1fr 46px;align-items:center;gap:6px;margin:7px 0}
+  label > span{color:var(--ui-dim)}
+  label > output{color:var(--ui-accent);text-align:right;font-variant-numeric:tabular-nums}
+  input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--ui-accent);margin:0}
+  input[type=color]{width:100%;height:26px;padding:0;border:1px solid var(--ui-line);
+                    border-radius:5px;background:none}
+  textarea,select,input[type=text]{width:100%;background:#0e0e12;color:var(--ui-fg);
+    border:1px solid var(--ui-line);border-radius:6px;padding:7px;font:inherit}
+  textarea{resize:vertical;min-height:64px;letter-spacing:.02em}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .presets{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  button{background:#22222a;color:var(--ui-fg);border:1px solid var(--ui-line);
+         border-radius:6px;padding:8px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
+  button.primary{background:var(--ui-accent);color:#111;border-color:var(--ui-accent);font-weight:700}
+  .check{display:flex;align-items:center;gap:8px;margin:7px 0;grid-template-columns:none}
+  .check input{accent-color:var(--ui-accent)}
+
+  /* ---------- stage ---------- */
+  .stage{display:grid;place-items:center;padding:24px;background:
+    repeating-conic-gradient(#151519 0 25%,#101014 0 50%) 0 0/24px 24px}
+  .poster{width:min(78vh,100%);aspect-ratio:1080/1350;box-shadow:0 24px 60px #0009}
+  svg{display:block;width:100%;height:100%}
+</style>
+
+<div class="app">
+<aside class="panel">
+  <h1>Inflate Type<small>부풀린 3D 젤리 타이포그래피 — SVG 필터만 사용</small></h1>
+
+  <fieldset><legend>Preset</legend>
+    <div class="presets">
+      <button data-preset="pop">POP? 핑크</button>
+      <button data-preset="november">NOVEMBER 세이지</button>
+      <button data-preset="balloon">풍선 옐로우</button>
+      <button data-preset="candy">캔디 퍼플</button>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>Text</legend>
+    <textarea id="txt" spellcheck="false"></textarea>
+    <label class="check"><input type="checkbox" id="fill"><span>줄마다 폭 꽉 채우기</span></label>
+    <label><span>글자 크기</span><output id="sizeO"></output>
+      <input type="range" id="size" min="60" max="420" step="1"></label>
+    <label><span>줄 간격</span><output id="lhO"></output>
+      <input type="range" id="lh" min="0.6" max="1.4" step="0.01"></label>
+    <label><span>자간</span><output id="trO"></output>
+      <input type="range" id="tr" min="-40" max="20" step="0.5"></label>
+    <label><span>기울기</span><output id="skO"></output>
+      <input type="range" id="sk" min="-20" max="20" step="0.5"></label>
+  </fieldset>
+
+  <fieldset><legend>Inflate</legend>
+    <label><span>살 붙이기(stroke)</span><output id="fatO"></output>
+      <input type="range" id="fat" min="0" max="60" step="1"></label>
+    <label><span>부풂 반경</span><output id="puffO"></output>
+      <input type="range" id="puff" min="2" max="40" step="0.5"></label>
+    <label><span>뭉침(threshold)</span><output id="thrO"></output>
+      <input type="range" id="thr" min="0.2" max="0.75" step="0.01"></label>
+    <label><span>돔 높이</span><output id="domeO"></output>
+      <input type="range" id="dome" min="1" max="30" step="0.5"></label>
+  </fieldset>
+
+  <fieldset><legend>Light &amp; material</legend>
+    <label><span>하이라이트 세기</span><output id="specO"></output>
+      <input type="range" id="spec" min="0" max="3" step="0.05"></label>
+    <label><span>하이라이트 크기</span><output id="shineO"></output>
+      <input type="range" id="shine" min="2" max="80" step="1"></label>
+    <label><span>광원 X</span><output id="lxO"></output>
+      <input type="range" id="lx" min="-400" max="1480" step="10"></label>
+    <label><span>광원 Y</span><output id="lyO"></output>
+      <input type="range" id="ly" min="-400" max="1750" step="10"></label>
+    <label><span>광원 높이</span><output id="lzO"></output>
+      <input type="range" id="lz" min="20" max="600" step="10"></label>
+    <label><span>음영 세기</span><output id="diffO"></output>
+      <input type="range" id="diff" min="0" max="1" step="0.02"></label>
+    <div class="row">
+      <div><span style="color:var(--ui-dim)">본체</span><input type="color" id="c1"></div>
+      <div><span style="color:var(--ui-dim)">하이라이트 톤</span><input type="color" id="c2"></div>
+    </div>
+    <label style="margin-top:8px"><span>번짐(soft focus)</span><output id="softO"></output>
+      <input type="range" id="soft" min="0" max="14" step="0.2"></label>
+  </fieldset>
+
+  <fieldset><legend>Background</legend>
+    <div class="row">
+      <div><span style="color:var(--ui-dim)">배경</span><input type="color" id="bg1"></div>
+      <div><span style="color:var(--ui-dim)">체커</span><input type="color" id="bg2"></div>
+    </div>
+    <label style="margin-top:8px"><span>체커 칸</span><output id="checkO"></output>
+      <input type="range" id="check" min="0" max="120" step="2"></label>
+    <label><span>그레인</span><output id="grainO"></output>
+      <input type="range" id="grain" min="0" max="0.6" step="0.01"></label>
+    <label class="check"><input type="checkbox" id="shadow"><span>그림자</span></label>
+  </fieldset>
+
+  <fieldset><legend>Caption</legend>
+    <input type="text" id="cap" spellcheck="false">
+  </fieldset>
+
+  <button class="primary" id="png">PNG 내보내기 (2160×2700)</button>
+  <button id="svgdl">SVG 내보내기</button>
+</aside>
+
+<main class="stage">
+  <div class="poster">
+    <svg id="poster" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1350"
+         preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <!-- checkerboard -->
+        <pattern id="checker" width="80" height="80" patternUnits="userSpaceOnUse">
+          <rect width="80" height="80" fill="#82e05a"/>
+          <rect width="40" height="40" fill="#76d64e"/>
+          <rect x="40" y="40" width="40" height="40" fill="#76d64e"/>
+        </pattern>
+
+        <!-- film grain -->
+        <filter id="grainF" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="3" seed="7" stitchTiles="stitch"/>
+          <feColorMatrix type="saturate" values="0"/>
+          <feComponentTransfer><feFuncA type="linear" slope="1" intercept="0"/></feComponentTransfer>
+        </filter>
+
+        <!--
+          ===========  THE INFLATE FILTER  ===========
+          1  blur the glyph alpha            -> soft field
+          2  hard-threshold it               -> fat, rounded, merged silhouette  (= "solid")
+          3  blur the silhouette             -> height map for the lighting ops  (= "height")
+          4  flood the body colour, clip to solid
+          5  feDiffuseLighting  = volume shading   (multiply)
+          6  feSpecularLighting = glossy highlight (screen)
+          7  offset blur of solid = contact shadow
+        -->
+        <filter id="inflate" x="-30%" y="-30%" width="160%" height="160%"
+                color-interpolation-filters="sRGB">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="b1" id="fPuff"/>
+          <feComponentTransfer in="b1" result="solid">
+            <feFuncA type="linear" slope="24" intercept="-9.36" id="fThr"/>
+          </feComponentTransfer>
+
+          <feGaussianBlur in="solid" stdDeviation="9" result="height" id="fHeight"/>
+
+          <feFlood flood-color="#ee4f9b" result="paint" id="fPaint"/>
+          <feComposite in="paint" in2="solid" operator="in" result="body"/>
+
+          <feDiffuseLighting in="height" surfaceScale="8" diffuseConstant="1"
+                             lighting-color="#ffd7ec" result="dRaw" id="fDiff">
+            <feDistantLight azimuth="230" elevation="52" id="fDistant"/>
+          </feDiffuseLighting>
+          <feComponentTransfer in="dRaw" result="dMix">
+            <feFuncR type="linear" slope="0.55" intercept="0.45" id="fDR"/>
+            <feFuncG type="linear" slope="0.55" intercept="0.45" id="fDG"/>
+            <feFuncB type="linear" slope="0.55" intercept="0.45" id="fDB"/>
+          </feComponentTransfer>
+          <feComposite in="dMix" in2="solid" operator="in" result="dClip"/>
+          <feBlend in="body" in2="dClip" mode="multiply" result="shaded"/>
+
+          <feSpecularLighting in="height" surfaceScale="8" specularConstant="1.5"
+                              specularExponent="26" lighting-color="#ffffff" result="sRaw" id="fSpec">
+            <fePointLight x="330" y="300" z="260" id="fPoint"/>
+          </feSpecularLighting>
+          <feComposite in="sRaw" in2="solid" operator="in" result="sClip"/>
+          <feBlend in="shaded" in2="sClip" mode="screen" result="lit"/>
+
+          <feGaussianBlur in="lit" stdDeviation="0" result="litSoft" id="fSoft"/>
+
+          <feGaussianBlur in="solid" stdDeviation="16" result="shBlur"/>
+          <feOffset in="shBlur" dx="10" dy="26" result="shOff"/>
+          <feComponentTransfer in="shOff" result="shade">
+            <feFuncA type="linear" slope="0.45" id="fShadow"/>
+          </feComponentTransfer>
+
+          <feMerge>
+            <feMergeNode in="shade"/>
+            <feMergeNode in="litSoft"/>
+          </feMerge>
+        </filter>
+      </defs>
+
+      <rect id="bgRect" width="1080" height="1350" fill="#82e05a"/>
+      <rect id="bgCheck" width="1080" height="1350" fill="url(#checker)"/>
+      <g id="type" filter="url(#inflate)"></g>
+      <text id="capText" x="1030" y="1300" text-anchor="end" font-size="19"
+            font-family="ui-sans-serif,system-ui,'Liberation Sans',sans-serif"
+            letter-spacing="3" fill="#12130f" opacity=".85"></text>
+      <rect id="grainRect" width="1080" height="1350" filter="url(#grainF)"
+            style="mix-blend-mode:overlay" opacity=".18"/>
+    </svg>
+  </div>
+</main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const W = 1080, H = 1350, MARGIN = 70;
+const REF = 300;   // 슬라이더 값의 기준 글자 크기
+
+const PRESETS = {
+  /* 원본 1: "BUT CAN YOU MAKE IT POP?" — 형광 그린 체커 + 핑크 글로시 */
+  pop: {
+    txt:"POP?", fill:true, size:300, lh:0.86, tr:-14, sk:0,
+    fat:26, puff:15, thr:0.39, dome:9, spec:1.75, shine:22,
+    lx:340, ly:280, lz:300, diff:0.62, c1:"#ee4f9b", c2:"#ffd7ec", soft:0,
+    bg1:"#82e05a", bg2:"#75d54d", check:80, grain:0.16, shadow:true,
+    cap:"PINKSUGAR / TYPE LETTERS"
+  },
+  /* 원본 2: "NOVEMBER 27" — 세이지 그린 모노톤 + 소프트 포커스 */
+  november: {
+    txt:"NOVEM\nBER 27", fill:true, size:300, lh:0.9, tr:-4, sk:0,
+    fat:11, puff:11, thr:0.44, dome:11, spec:1.15, shine:14,
+    lx:250, ly:220, lz:340, diff:0.5, c1:"#93a189", c2:"#e9f3e1", soft:3.2,
+    bg1:"#8d9b84", bg2:"#8d9b84", check:0, grain:0.1, shadow:true,
+    cap:"OWLINES / 30 DAYS OF TYPES"
+  },
+  /* 원본 4: 지하철 안 노란 풍선 숫자 "2014" */
+  balloon: {
+    txt:"20\n14", fill:true, size:300, lh:0.92, tr:-10, sk:0,
+    fat:20, puff:16, thr:0.4, dome:14, spec:1.35, shine:26,
+    lx:300, ly:180, lz:420, diff:0.7, c1:"#f5c518", c2:"#fff0b8", soft:0.6,
+    bg1:"#cfd3d6", bg2:"#c6cacd", check:0, grain:0.22, shadow:true,
+    cap:"INFLATABLE TYPE"
+  },
+  candy: {
+    txt:"SUPER\nSOFT", fill:true, size:300, lh:0.88, tr:-12, sk:-6,
+    fat:28, puff:16, thr:0.4, dome:10, spec:2.2, shine:40,
+    lx:380, ly:260, lz:280, diff:0.66, c1:"#7b5cff", c2:"#e0d7ff", soft:0,
+    bg1:"#f2e9dd", bg2:"#ece1d2", check:0, grain:0.2, shadow:true,
+    cap:"CANDY GLOSS"
+  }
+};
+
+const CTRL = {
+  txt:"value", fill:"checked", size:"n", lh:"n", tr:"n", sk:"n",
+  fat:"n", puff:"n", thr:"n", dome:"n", spec:"n", shine:"n",
+  lx:"n", ly:"n", lz:"n", diff:"n", c1:"value", c2:"value", soft:"n",
+  bg1:"value", bg2:"value", check:"n", grain:"n", shadow:"checked", cap:"value"
+};
+
+function readState(){
+  const s = {};
+  for (const [k, kind] of Object.entries(CTRL)){
+    const el = $(k);
+    s[k] = kind === "n" ? parseFloat(el.value)
+         : kind === "checked" ? el.checked
+         : el.value;
+  }
+  return s;
+}
+
+function applyPreset(p){
+  for (const [k, kind] of Object.entries(CTRL)){
+    if (!(k in p)) continue;
+    const el = $(k);
+    if (kind === "checked") el.checked = p[k]; else el.value = p[k];
+  }
+  render();
+}
+
+/* ---------- text layout ---------- */
+const SVGNS = "http://www.w3.org/2000/svg";
+
+function buildType(s){
+  const g = $("type");
+  g.textContent = "";
+  const lines = s.txt.split("\n").filter(l => l.length);
+  if (!lines.length) return;
+
+  const nodes = lines.map(line => {
+    const t = document.createElementNS(SVGNS, "text");
+    t.setAttribute("x", W / 2);
+    t.setAttribute("text-anchor", "middle");
+    t.setAttribute("font-family", "'Helvetica Now Display','Archivo Black','Arial Black',Impact,'Liberation Sans',sans-serif");
+    t.setAttribute("font-weight", "900");
+    t.setAttribute("letter-spacing", s.tr);
+    t.setAttribute("fill", s.c1);
+    t.setAttribute("stroke", s.c1);
+    t.setAttribute("stroke-width", s.fat);
+    t.setAttribute("stroke-linejoin", "round");
+    t.setAttribute("stroke-linecap", "round");
+    t.setAttribute("paint-order", "stroke fill");
+    t.setAttribute("font-size", 200);
+    t.textContent = line;
+    g.appendChild(t);
+    return t;
+  });
+
+  // 줄마다 폭을 꽉 채우거나(원본 포스터 스타일) 고정 크기를 쓴다
+  let sizes = nodes.map(t => {
+    if (!s.fill) return s.size;
+    const w = t.getComputedTextLength();
+    return w > 0 ? Math.min(200 * (W - MARGIN * 2) / w, 900) : s.size;
+  });
+
+  // 세로로 넘치면 전체를 균등 축소한다
+  const maxH = H - MARGIN * 2;
+  const rawH = sizes.reduce((a, v) => a + v * s.lh, 0);
+  if (rawH > maxH) sizes = sizes.map(v => v * maxH / rawH);
+
+  const heights = sizes.map(v => v * s.lh);
+  const total = heights.reduce((a, b) => a + b, 0);
+  let y = (H - total) / 2;
+  nodes.forEach((t, i) => {
+    t.setAttribute("font-size", sizes[i]);
+    t.setAttribute("letter-spacing", s.tr * sizes[i] / REF);
+    t.setAttribute("stroke-width", s.fat * sizes[i] / REF);
+    y += heights[i];
+    t.setAttribute("y", y - heights[i] * 0.22);
+  });
+
+  g.setAttribute("transform", s.sk
+    ? `translate(${W/2} ${H/2}) skewY(${-s.sk}) translate(${-W/2} ${-H/2})` : "");
+
+  // 필터 파라미터도 실제 글자 크기에 비례시켜야 크기와 무관하게 같은 재질이 나온다
+  return sizes.reduce((a, b) => a + b, 0) / sizes.length / REF;
+}
+
+/* ---------- filter wiring ---------- */
+function render(){
+  const s = readState();
+  for (const k of Object.keys(CTRL))
+    if (CTRL[k] === "n" && $(k + "O")) $(k + "O").value = s[k];
+
+  const k = buildType(s) || 1;   // 실제 글자 크기 / 기준 크기
+
+  // 1  blur radius controls how round / merged the letters get
+  $("fPuff").setAttribute("stdDeviation", s.puff * k);
+  // 2  hard threshold at `thr`: slope 24 gives a ~4% soft edge
+  $("fThr").setAttribute("slope", 24);
+  $("fThr").setAttribute("intercept", -24 * s.thr);
+  // 3  height map smoothing = dome softness
+  $("fHeight").setAttribute("stdDeviation", s.puff * 0.62 * k);
+
+  $("fPaint").setAttribute("flood-color", s.c1);
+
+  $("fDiff").setAttribute("surfaceScale", s.dome * k);
+  $("fDiff").setAttribute("lighting-color", s.c2);
+  for (const id of ["fDR", "fDG", "fDB"]){
+    $(id).setAttribute("slope", s.diff);
+    $(id).setAttribute("intercept", 1 - s.diff);
+  }
+
+  $("fSpec").setAttribute("surfaceScale", s.dome * k);
+  $("fSpec").setAttribute("specularConstant", s.spec);
+  $("fSpec").setAttribute("specularExponent", s.shine);
+  $("fPoint").setAttribute("x", s.lx);
+  $("fPoint").setAttribute("y", s.ly);
+  $("fPoint").setAttribute("z", s.lz * k);
+
+  $("fSoft").setAttribute("stdDeviation", s.soft * k);
+  $("fShadow").setAttribute("slope", s.shadow ? 0.45 : 0);
+
+  $("bgRect").setAttribute("fill", s.bg1);
+  const checker = document.querySelector("#checker");
+  if (s.check > 0){
+    checker.setAttribute("width", s.check);
+    checker.setAttribute("height", s.check);
+    const r = checker.children;
+    r[0].setAttribute("width", s.check);  r[0].setAttribute("height", s.check);
+    r[0].setAttribute("fill", s.bg1);
+    r[1].setAttribute("width", s.check/2); r[1].setAttribute("height", s.check/2);
+    r[1].setAttribute("fill", s.bg2);
+    r[2].setAttribute("x", s.check/2); r[2].setAttribute("y", s.check/2);
+    r[2].setAttribute("width", s.check/2); r[2].setAttribute("height", s.check/2);
+    r[2].setAttribute("fill", s.bg2);
+    $("bgCheck").setAttribute("opacity", 1);
+  } else {
+    $("bgCheck").setAttribute("opacity", 0);
+  }
+
+  $("grainRect").setAttribute("opacity", s.grain);
+  $("capText").textContent = s.cap;
+}
+
+/* ---------- export ---------- */
+function serialize(){
+  const svg = $("poster").cloneNode(true);
+  svg.setAttribute("xmlns", SVGNS);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg);
+}
+function dataURL(){
+  return "data:image/svg+xml;base64," +
+    btoa(unescape(encodeURIComponent(serialize())));
+}
+function download(href, name){
+  const a = document.createElement("a");
+  a.href = href; a.download = name; a.click();
+}
+$("png").onclick = () => {
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = W * 2; c.height = H * 2;
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    download(c.toDataURL("image/png"), "inflate-type.png");
+  };
+  img.onerror = () => alert("내보내기 실패 — SVG 직렬화를 확인하세요");
+  img.src = dataURL();
+};
+$("svgdl").onclick = () => download(dataURL(), "inflate-type.svg");
+
+/* ---------- boot ---------- */
+document.querySelectorAll(".presets button").forEach(b =>
+  b.onclick = () => applyPreset(PRESETS[b.dataset.preset]));
+for (const k of Object.keys(CTRL)) $(k).addEventListener("input", render);
+applyPreset(PRESETS.pop);
+</script>

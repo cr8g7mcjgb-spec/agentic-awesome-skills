@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Poster Typography FX — 템플릿</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0e0e11;color:#e9e9ee;
+       font:15px/1.6 ui-sans-serif,system-ui,"Liberation Sans",sans-serif;padding:48px 24px}
+  main{max-width:960px;margin:0 auto}
+  h1{font-size:34px;letter-spacing:-.02em;margin:0 0 6px}
+  p.lead{color:#9a9aa6;margin:0 0 36px;max-width:60ch}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+  a.card{display:block;padding:22px;border:1px solid #2a2a33;border-radius:12px;
+         text-decoration:none;color:inherit;background:#16161b;transition:.15s}
+  a.card:hover{border-color:#c8ff3c;transform:translateY(-2px)}
+  a.card h2{margin:0 0 6px;font-size:17px}
+  a.card code{color:#c8ff3c;font-size:12px}
+  a.card p{margin:8px 0 0;color:#9a9aa6;font-size:13px}
+  .swatch{height:66px;border-radius:8px;margin-bottom:14px}
+  footer{margin-top:40px;color:#6d6d78;font-size:13px}
+</style>
+<main>
+  <h1>Poster Typography FX</h1>
+  <p class="lead">SVG 필터와 캔버스만으로 만든 포스터 타이포 생성기 4종.
+     의존성·빌드·폰트 다운로드 없음. 브라우저에서 파일을 열면 바로 동작하고,
+     PNG 또는 벡터 SVG로 내보낼 수 있습니다.</p>
+
+  <div class="grid">
+    <a class="card" href="inflate-type.html">
+      <div class="swatch" style="background:linear-gradient(135deg,#82e05a,#ee4f9b)"></div>
+      <h2>Inflate Type</h2>
+      <code>inflate-type.html</code>
+      <p>부풀린 젤리·풍선 3D 레터링. 알파를 높이맵으로 삼아 스페큘러/디퓨즈 조명을 얹습니다.</p>
+    </a>
+    <a class="card" href="chrome-liquid.html">
+      <div class="swatch" style="background:linear-gradient(135deg,#8fa8e8,#e8f0ff 40%,#2b3444)"></div>
+      <h2>Chrome Liquid</h2>
+      <code>chrome-liquid.html</code>
+      <p>녹아내린 금속 타이포. 진동하는 전달 테이블이 크롬 밴딩을, 변위 맵이 액체 왜곡을 만듭니다.</p>
+    </a>
+    <a class="card" href="grain-gradient.html">
+      <div class="swatch" style="background:radial-gradient(circle at 30% 40%,#ff8a1e,#ff2f8e 40%,#0b0510)"></div>
+      <h2>Grain Gradient</h2>
+      <code>grain-gradient.html</code>
+      <p>트리피 그라디언트 포스터. 그라디언트 맵 + 2겹 필름 그레인으로 링과 질감을 만듭니다.</p>
+    </a>
+    <a class="card" href="halftone-bitmap.html">
+      <div class="swatch" style="background:repeating-radial-gradient(circle at 6px 6px,#111 0 2.6px,#ff9ec7 2.6px 6px)"></div>
+      <h2>Halftone Bitmap</h2>
+      <code>halftone-bitmap.html</code>
+      <p>일러스트레이터식 비트맵 하프톤. 도형만 교체하면 질감은 그대로 유지됩니다.</p>
+    </a>
+  </div>
+
+  <footer>기법 설명과 필터 해부는 상위 폴더의 <code>SKILL.md</code>를 참고하세요.</footer>
+</main>
+</html>

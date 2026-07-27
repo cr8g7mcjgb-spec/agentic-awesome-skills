@@ -1,0 +1,343 @@
+<title>Grain Gradient — trippy gradient-map poster</title>
+<style>
+  :root{--ui-bg:#111114;--ui-panel:#18181d;--ui-line:#2c2c34;--ui-fg:#e8e8ec;--ui-dim:#8b8b96;--ui-accent:#ff5ea8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:12px/1.5 ui-sans-serif,system-ui,"Liberation Sans",sans-serif}
+  .app{display:grid;grid-template-columns:296px minmax(0,1fr);min-height:100vh}
+  @media (max-width:820px){.app{grid-template-columns:1fr}}
+  .panel{background:var(--ui-panel);border-right:1px solid var(--ui-line);padding:16px;
+         display:flex;flex-direction:column;gap:14px;max-height:100vh;overflow:auto}
+  .panel h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:0}
+  .panel h1 small{display:block;color:var(--ui-dim);letter-spacing:.04em;text-transform:none;font-weight:400;margin-top:4px}
+  fieldset{border:1px solid var(--ui-line);border-radius:8px;padding:10px;margin:0}
+  legend{color:var(--ui-dim);letter-spacing:.12em;text-transform:uppercase;font-size:10px;padding:0 4px}
+  label{display:grid;grid-template-columns:1fr 46px;align-items:center;gap:6px;margin:7px 0}
+  label>span{color:var(--ui-dim)}
+  label>output{color:var(--ui-accent);text-align:right;font-variant-numeric:tabular-nums}
+  input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--ui-accent);margin:0}
+  input[type=color]{width:100%;height:26px;padding:0;border:1px solid var(--ui-line);border-radius:5px;background:none}
+  textarea,select,input[type=text]{width:100%;background:#0e0e12;color:var(--ui-fg);border:1px solid var(--ui-line);
+    border-radius:6px;padding:7px;font:inherit}
+  textarea{resize:vertical;min-height:52px}
+  .ramp{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+  .presets{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  button{background:#22222a;color:var(--ui-fg);border:1px solid var(--ui-line);border-radius:6px;padding:8px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
+  button.primary{background:var(--ui-accent);color:#111;border-color:var(--ui-accent);font-weight:700}
+  .check{display:flex;align-items:center;gap:8px;margin:7px 0}
+  .check input{accent-color:var(--ui-accent)}
+  .stage{display:grid;place-items:center;padding:24px;
+         background:repeating-conic-gradient(#151519 0 25%,#101014 0 50%) 0 0/24px 24px}
+  .poster{width:min(78vh,100%);aspect-ratio:1080/1920;box-shadow:0 24px 60px #0009}
+  svg{display:block;width:100%;height:100%}
+</style>
+
+<div class="app">
+<aside class="panel">
+  <h1>Grain Gradient<small>트리피 그라디언트 — 그라디언트 맵 + 필름 그레인</small></h1>
+
+  <fieldset><legend>Preset</legend>
+    <div class="presets">
+      <button data-preset="trippy">TRIPPY</button>
+      <button data-preset="showroom">SHOWROOM</button>
+      <button data-preset="acid">ACID</button>
+      <button data-preset="dusk">DUSK</button>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>Blobs</legend>
+    <label><span>개수</span><output id="nO"></output>
+      <input type="range" id="n" min="1" max="7" step="1"></label>
+    <label><span>시드</span><output id="seedO"></output>
+      <input type="range" id="seed" min="1" max="60" step="1"></label>
+    <label><span>크기</span><output id="rO"></output>
+      <input type="range" id="r" min="120" max="900" step="10"></label>
+    <label><span>퍼짐(블러)</span><output id="blurO"></output>
+      <input type="range" id="blur" min="0" max="160" step="2"></label>
+    <label><span>세로 눌림</span><output id="sqO"></output>
+      <input type="range" id="sq" min="0.3" max="2" step="0.05"></label>
+  </fieldset>
+
+  <fieldset><legend>Gradient map</legend>
+    <p style="color:var(--ui-dim);margin:2px 0 8px">밝기 → 색. 링이 생기는 이유는 램프를 여러 번 반복하기 때문.</p>
+    <div class="ramp">
+      <input type="color" id="s0"><input type="color" id="s1"><input type="color" id="s2">
+      <input type="color" id="s3"><input type="color" id="s4">
+    </div>
+    <label style="margin-top:8px"><span>램프 반복(링)</span><output id="cycO"></output>
+      <input type="range" id="cyc" min="1" max="6" step="0.05"></label>
+    <label><span>램프 이동</span><output id="shiftO"></output>
+      <input type="range" id="shift" min="0" max="1" step="0.01"></label>
+    <label><span>부드러움</span><output id="softO"></output>
+      <input type="range" id="soft" min="8" max="64" step="1"></label>
+  </fieldset>
+
+  <fieldset><legend>Grain</legend>
+    <label><span>양</span><output id="grainO"></output>
+      <input type="range" id="grain" min="0" max="1" step="0.01"></label>
+    <label><span>입자 크기</span><output id="gsizeO"></output>
+      <input type="range" id="gsize" min="0.2" max="1.6" step="0.02"></label>
+    <label><span>비네트</span><output id="vigO"></output>
+      <input type="range" id="vig" min="0" max="1" step="0.02"></label>
+  </fieldset>
+
+  <fieldset><legend>Type</legend>
+    <textarea id="txt" spellcheck="false"></textarea>
+    <label><span>크기</span><output id="tsizeO"></output>
+      <input type="range" id="tsize" min="40" max="220" step="2"></label>
+    <label><span>줄 간격</span><output id="tlhO"></output>
+      <input type="range" id="tlh" min="0.8" max="1.6" step="0.02"></label>
+    <label><span>위치 X</span><output id="txO"></output>
+      <input type="range" id="tx" min="0" max="1080" step="10"></label>
+    <label><span>위치 Y</span><output id="tyO"></output>
+      <input type="range" id="ty" min="0" max="1920" step="10"></label>
+    <div><span style="color:var(--ui-dim)">글자색</span><input type="color" id="tcol"></div>
+    <label class="check" style="margin-top:8px"><input type="checkbox" id="tsh"><span>글자 그림자</span></label>
+    <input type="text" id="sub" spellcheck="false" placeholder="부제" style="margin-top:6px">
+  </fieldset>
+
+  <button class="primary" id="png">PNG 내보내기</button>
+  <button id="svgdl">SVG 내보내기</button>
+</aside>
+
+<main class="stage">
+  <div class="poster">
+    <svg id="poster" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920">
+      <defs>
+        <radialGradient id="blobG">
+          <stop offset="0" stop-color="#fff"/>
+          <stop offset="1" stop-color="#000"/>
+        </radialGradient>
+
+        <!--
+          ===========  GRADIENT MAP  ===========
+          1  saturate 0        : 블롭 필드를 순수 밝기로
+          2  feComponentTransfer(table) : 밝기 → 램프 색  (= 포토샵 그라디언트 맵)
+             램프를 여러 주기로 반복시키면 원본처럼 동심원 링이 생긴다
+        -->
+        <filter id="gmap" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+          <feGaussianBlur stdDeviation="60" result="soft" id="gBlur"/>
+          <feColorMatrix in="soft" type="saturate" values="0" result="lum"/>
+          <feComponentTransfer in="lum" result="mapped">
+            <feFuncR type="table" tableValues="0 1" id="mR"/>
+            <feFuncG type="table" tableValues="0 1" id="mG"/>
+            <feFuncB type="table" tableValues="0 1" id="mB"/>
+            <feFuncA type="table" tableValues="1 1"/>
+          </feComponentTransfer>
+        </filter>
+
+        <filter id="grainF" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="4" seed="3"
+                        stitchTiles="stitch" id="gNoise"/>
+          <feColorMatrix type="saturate" values="0"/>
+        </filter>
+
+        <radialGradient id="vigG">
+          <stop offset="0.45" stop-color="#000" stop-opacity="0"/>
+          <stop offset="1" stop-color="#000" stop-opacity="1"/>
+        </radialGradient>
+
+        <filter id="tShadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity=".45"/>
+        </filter>
+      </defs>
+
+      <g filter="url(#gmap)">
+        <rect width="1080" height="1920" fill="#000"/>
+        <g id="blobs" style="mix-blend-mode:screen"></g>
+      </g>
+
+      <rect id="vigRect" width="1080" height="1920" fill="url(#vigG)" opacity=".4"/>
+      <!-- overlay 는 중간톤에만 먹는다. 원본처럼 어두운 영역에도 입자가 보이려면
+           screen 레이어를 한 장 더 얹어야 한다 -->
+      <rect id="grainRect" width="1080" height="1920" filter="url(#grainF)"
+            style="mix-blend-mode:overlay" opacity=".35"/>
+      <rect id="grainRect2" width="1080" height="1920" filter="url(#grainF)"
+            style="mix-blend-mode:screen" opacity=".1"/>
+      <g id="type"></g>
+    </svg>
+  </div>
+</main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+const W = 1080, H = 1920;
+
+const PRESETS = {
+  /* 원본: "Trippy gradients" — 검정 위 형광 핑크·오렌지 링 */
+  trippy: {
+    n:3, seed:7, r:520, blur:70, sq:1.0,
+    s0:"#0b0510", s1:"#5b1a5e", s2:"#ff2f8e", s3:"#ff8a1e", s4:"#fff2b8",
+    cyc:2.6, shift:0.0, soft:34,
+    grain:0.5, gsize:0.72, vig:0.45,
+    txt:"Trippy\ngradients", tsize:120, tlh:1.12, tx:150, ty:430, tcol:"#ffffff", tsh:true,
+    sub:"@DESIGN_NEXA"
+  },
+  /* 원본: "SHOWROOM 2024" — 밝은 배경 위 부드러운 무지개 블롭 */
+  showroom: {
+    n:2, seed:22, r:620, blur:110, sq:0.8,
+    s0:"#f2f2f2", s1:"#ff7a3d", s2:"#ff2f6a", s3:"#7b5cff", s4:"#1b2a6b",
+    cyc:1.0, shift:0.05, soft:52,
+    grain:0.12, gsize:0.7, vig:0,
+    txt:"SHOW\nROOM 2024", tsize:130, tlh:1.05, tx:120, ty:1500, tcol:"#141414", tsh:false,
+    sub:"NEW COLLECTION"
+  },
+  acid: {
+    n:5, seed:31, r:380, blur:48, sq:1.3,
+    s0:"#03120a", s1:"#0d6b3f", s2:"#39ff88", s3:"#c8ff3c", s4:"#ffffff",
+    cyc:3.8, shift:0.2, soft:22,
+    grain:0.5, gsize:1.0, vig:0.55,
+    txt:"ACID\nBURN", tsize:150, tlh:1.0, tx:130, ty:420, tcol:"#eaffe6", tsh:true,
+    sub:"SIDE A / 33 RPM"
+  },
+  dusk: {
+    n:4, seed:14, r:700, blur:130, sq:0.6,
+    s0:"#120a1f", s1:"#3b1d6e", s2:"#c8478f", s3:"#ff9d5c", s4:"#ffe6b0",
+    cyc:1.6, shift:0.35, soft:60,
+    grain:0.3, gsize:0.6, vig:0.6,
+    txt:"DUSK\nSESSIONS", tsize:110, tlh:1.1, tx:140, ty:1420, tcol:"#ffeede", tsh:true,
+    sub:"LIVE FROM THE ROOF"
+  }
+};
+
+const CTRL = {
+  n:"n", seed:"n", r:"n", blur:"n", sq:"n",
+  s0:"value", s1:"value", s2:"value", s3:"value", s4:"value",
+  cyc:"n", shift:"n", soft:"n",
+  grain:"n", gsize:"n", vig:"n",
+  txt:"value", tsize:"n", tlh:"n", tx:"n", ty:"n", tcol:"value", tsh:"checked", sub:"value"
+};
+
+const read = () => Object.fromEntries(Object.entries(CTRL).map(([k, kind]) => {
+  const el = $(k);
+  return [k, kind === "n" ? parseFloat(el.value) : kind === "checked" ? el.checked : el.value];
+}));
+
+function applyPreset(p){
+  for (const [k, kind] of Object.entries(CTRL)){
+    if (!(k in p)) continue;
+    if (kind === "checked") $(k).checked = p[k]; else $(k).value = p[k];
+  }
+  render();
+}
+
+/* 결정론적 난수 — 시드가 같으면 결과도 같다 */
+function rng(seed){
+  let s = seed * 9301 + 49297;
+  return () => (s = (s * 9301 + 49297) % 233280) / 233280;
+}
+
+const hex2rgb = h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+
+/* 램프에서 tableValues 생성 = 그라디언트 맵의 핵심 */
+function mapTables(stops, cycles, shift, steps = 96){
+  const cols = stops.map(hex2rgb);
+  const out = [[], [], []];
+  for (let i = 0; i < steps; i++){
+    let t = (i / (steps - 1) * cycles + shift) % 1;
+    // 램프를 왕복시키면 이음매 없이 링이 반복된다
+    const seg = t * (cols.length - 1);
+    const a = Math.min(cols.length - 2, Math.floor(seg));
+    const f = seg - a;
+    for (let c = 0; c < 3; c++)
+      out[c].push(((cols[a][c] * (1 - f) + cols[a + 1][c] * f) / 255).toFixed(4));
+  }
+  return out.map(v => v.join(" "));
+}
+
+function buildBlobs(s){
+  const g = $("blobs");
+  g.textContent = "";
+  const rand = rng(s.seed);
+  for (let i = 0; i < s.n; i++){
+    const e = document.createElementNS(SVGNS, "ellipse");
+    e.setAttribute("cx", (0.12 + rand() * 0.76) * W);
+    e.setAttribute("cy", (0.12 + rand() * 0.76) * H);
+    const rr = s.r * (0.6 + rand() * 0.8);
+    e.setAttribute("rx", rr);
+    e.setAttribute("ry", rr * s.sq);
+    e.setAttribute("fill", "url(#blobG)");
+    g.appendChild(e);
+  }
+}
+
+function buildType(s){
+  const g = $("type");
+  g.textContent = "";
+  s.txt.split("\n").filter(Boolean).forEach((line, i) => {
+    const t = document.createElementNS(SVGNS, "text");
+    t.setAttribute("x", s.tx);
+    t.setAttribute("y", s.ty + i * s.tsize * s.tlh);
+    t.setAttribute("font-size", s.tsize);
+    t.setAttribute("font-weight", "800");
+    t.setAttribute("font-family", "'Helvetica Now Display','Inter','Archivo','Liberation Sans',sans-serif");
+    t.setAttribute("letter-spacing", -s.tsize * 0.02);
+    t.setAttribute("fill", s.tcol);
+    if (s.tsh) t.setAttribute("filter", "url(#tShadow)");
+    t.textContent = line;
+    g.appendChild(t);
+  });
+  if (s.sub){
+    const t = document.createElementNS(SVGNS, "text");
+    t.setAttribute("x", s.tx);
+    t.setAttribute("y", s.ty + s.txt.split("\n").filter(Boolean).length * s.tsize * s.tlh + 20);
+    t.setAttribute("font-size", 26);
+    t.setAttribute("letter-spacing", 4);
+    t.setAttribute("font-weight", 600);
+    t.setAttribute("font-family", "ui-sans-serif,system-ui,'Liberation Sans',sans-serif");
+    t.setAttribute("fill", s.tcol);
+    t.setAttribute("opacity", ".8");
+    t.textContent = s.sub;
+    g.appendChild(t);
+  }
+}
+
+function render(){
+  const s = read();
+  for (const k of Object.keys(CTRL))
+    if (CTRL[k] === "n" && $(k + "O")) $(k + "O").value = s[k];
+
+  buildBlobs(s);
+  buildType(s);
+
+  $("gBlur").setAttribute("stdDeviation", s.blur);
+  const [r, g, b] = mapTables([s.s0, s.s1, s.s2, s.s3, s.s4], s.cyc, s.shift, s.soft * 2);
+  $("mR").setAttribute("tableValues", r);
+  $("mG").setAttribute("tableValues", g);
+  $("mB").setAttribute("tableValues", b);
+
+  $("gNoise").setAttribute("baseFrequency", s.gsize);
+  $("grainRect").setAttribute("opacity", s.grain);
+  $("grainRect2").setAttribute("opacity", s.grain * 0.28);
+  $("vigRect").setAttribute("opacity", s.vig);
+}
+
+function serialize(){
+  const svg = $("poster").cloneNode(true);
+  svg.setAttribute("xmlns", SVGNS);
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg);
+}
+const dataURL = () => "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(serialize())));
+function download(href, name){ const a = document.createElement("a"); a.href = href; a.download = name; a.click(); }
+$("png").onclick = () => {
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = W * 1.5; c.height = H * 1.5;
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    download(c.toDataURL("image/png"), "grain-gradient.png");
+  };
+  img.onerror = () => alert("내보내기 실패");
+  img.src = dataURL();
+};
+$("svgdl").onclick = () => download(dataURL(), "grain-gradient.svg");
+
+document.querySelectorAll(".presets button").forEach(b =>
+  b.onclick = () => applyPreset(PRESETS[b.dataset.preset]));
+for (const key of Object.keys(CTRL)) $(key).addEventListener("input", render);
+applyPreset(PRESETS.trippy);
+</script>
