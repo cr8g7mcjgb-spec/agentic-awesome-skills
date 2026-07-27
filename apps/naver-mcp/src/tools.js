@@ -18,6 +18,7 @@ import {
   parseTistoryUrl,
   cafeReadRoutes,
   tistoryReadRoutes,
+  genericReadRoutes,
   readViaChain,
   sleep,
 } from "./naver.js";
@@ -258,10 +259,82 @@ export async function readArticle({ url, max_chars }) {
     })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
   }
 
-  throw new NaverError(
-    "BAD_INPUT",
-    "Could not tell what kind of page that is. Supported: naver blog, naver news, public naver cafe, tistory, and blog hosts using /{postId} or /entry/{slug}.",
-    { url: raw }
+  // Anything else - government sites, journals, ordinary news - reads through
+  // the generic path. Naver's search links out to all of these, so refusing
+  // unrecognised hosts would make search results unopenable.
+  const post = await readViaChain(genericReadRoutes(raw));
+  let host = raw;
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    /* keep the raw string */
+  }
+  return `${articleHeader({
+    title: post.title,
+    fallback: host,
+    source: raw,
+    date: post.date,
+    route: post.route,
+    strategy: post.strategy,
+    extra: `사이트: ${host}`,
+  })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+}
+
+/* --------------------------------------------------- 2c. integrated web search */
+
+// Naver's own assets and shortener links are not results.
+const NOT_A_RESULT =
+  /(?:^|\.)(?:naver\.net|pstatic\.net|nstatic\.net|naver\.com\/?$|nid\.naver|help\.naver|policy\.naver|adcr\.naver)/i;
+
+/**
+ * Search Naver's web tab, which reaches past blogs and news into government
+ * sites, institutes and journals - the sources that make Naver worth querying
+ * for Korean material in the first place.
+ */
+export async function naverWebSearch({ query, count = 10 }) {
+  if (!query || !String(query).trim()) {
+    throw new NaverError("BAD_INPUT", "query is required");
+  }
+  const want = clampCount(count);
+  const seen = new Map();
+
+  for (let start = 1; seen.size < want && start <= 31; start += 15) {
+    const url =
+      `https://m.search.naver.com/search.naver?ssc=tab.m_web.all&where=m_web` +
+      `&query=${encodeURIComponent(query)}&start=${start}`;
+    const html = await httpGet(url, { referer: SEARCH_REFERER });
+
+    const re = /<a\b[^>]*\bhref="(https?:\/\/[^"]+)"[^>]*>([\s\S]{0,1200}?)<\/a>/gi;
+    let m;
+    const before = seen.size;
+    while ((m = re.exec(html)) !== null && seen.size < want) {
+      const link = m[1].replace(/&amp;/g, "&");
+      let host;
+      try {
+        host = new URL(link).hostname;
+      } catch {
+        continue;
+      }
+      if (NOT_A_RESULT.test(host) || host.endsWith("search.naver.com")) continue;
+      if (seen.has(link)) continue;
+      const title = cleanTitle(m[2]);
+      if (!title) continue; // chrome links carry no usable title
+      seen.set(link, { title, host });
+    }
+    if (seen.size === before) break;
+    if (seen.size < want) await sleep(600);
+  }
+
+  const items = [...seen.entries()].slice(0, want);
+  if (!items.length) {
+    throw new NaverError("PARSE_FAILED", "Web search loaded but no external results were found.", { query });
+  }
+  const lines = items.map(
+    ([link, v], i) => `${i + 1}. ${v.title}\n   ${link}\n   (${v.host})`
+  );
+  return (
+    `"${query}" 네이버 웹 검색 결과 ${items.length}건\n\n${lines.join("\n")}\n\n` +
+    `(본문이 필요하면 read_article 에 위 URL을 넣으세요.)`
   );
 }
 

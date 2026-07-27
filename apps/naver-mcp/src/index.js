@@ -65,16 +65,28 @@ const TOOLS = [
     },
   },
   {
+    name: "naver_web_search",
+    description:
+      "네이버 웹 검색(통합검색의 웹 탭)으로 블로그·뉴스 바깥의 사이트까지 찾는다. 정부기관, 공공기관(예: 한국소비자원), 연구소, 학술·전문 자료처럼 블로그 검색으로는 안 잡히는 한국어 자료를 찾을 때 써라. 결과 URL은 read_article 로 본문을 읽을 수 있다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "검색어" },
+        count: { type: "integer", description: "가져올 개수 (1-100, 기본 10)", minimum: 1, maximum: 100 },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "read_article",
     description:
-      "URL 하나로 본문을 읽는다. 네이버 블로그/뉴스/공개 카페, 티스토리, 그 밖의 일반 블로그를 URL 모양으로 알아서 구분해 처리한다. 어떤 링크인지 확실하지 않으면 이 도구를 써라. 응답 맨 위에 항상 출처 링크가 포함된다.",
+      "URL 하나로 본문을 읽는다. 네이버 블로그/뉴스/공개 카페, 티스토리는 전용 추출기로, 그 밖의 모든 사이트(정부·공공기관, 연구소, 언론사 등)는 범용 추출기로 처리한다. 검색 결과에서 얻은 링크는 종류를 가리지 말고 이 도구에 넣어라. 응답 맨 위에 항상 출처 링크가 포함된다.",
     inputSchema: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description:
-            "글 URL. blog.naver.com / cafe.naver.com / n.news.naver.com / *.tistory.com 등",
+          description: "글 URL. 어떤 사이트든 가능하다.",
         },
         max_chars: {
           type: "integer",
@@ -206,7 +218,15 @@ async function handleRpc(msg) {
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          "네이버 블로그/뉴스/카페/플레이스 본문을 가져오는 서버입니다. 검색으로 URL을 찾고 read 도구로 본문을 읽으세요.",
+          "네이버에서 한국어 자료를 찾아 본문까지 읽는 서버입니다.\n\n" +
+          "쓰는 순서: ① 검색 도구로 URL을 찾고 ② read_article 로 본문을 읽는다.\n" +
+          "- 블로그/후기/맛집 → naver_blog_search\n" +
+          "- 뉴스 → naver_news_search\n" +
+          "- 정부·공공기관(한국소비자원 등), 연구소, 학술·전문 자료 → naver_web_search\n" +
+          "- 카페 공개글 → naver_cafe_search\n\n" +
+          "read_article 은 사이트 종류를 가리지 않는다. 검색으로 얻은 링크는 " +
+          "네이버든 티스토리든 정부 사이트든 그대로 넣으면 된다.\n" +
+          "모든 본문 응답에는 출처 링크가 포함되므로, 사용자에게 답할 때 그 링크를 함께 제시하라.",
       });
     }
     case "tools/list":

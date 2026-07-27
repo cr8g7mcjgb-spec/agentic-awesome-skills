@@ -13,6 +13,7 @@ import {
   naverCafeSearch,
   naverPlaceReviews,
   readArticle,
+  naverWebSearch,
 } from "../src/tools.js";
 
 import { httpGet } from "../src/naver.js";
@@ -147,6 +148,27 @@ const run = async () => {
     return out;
   }, { minChars: 300 });
   await step("naver_place_reviews('성수동 카페', 5)", () => naverPlaceReviews({ query: "성수동 카페", count: 5 }));
+
+  // Web search is the route to sources blog search never surfaces - agencies,
+  // institutes, journals - so it must return links off naver.com.
+  let webUrl = null;
+  await step("naver_web_search('한국소비자원 피해구제', 5)", async () => {
+    const out = await naverWebSearch({ query: "한국소비자원 피해구제", count: 5 });
+    const links = [...out.matchAll(/https?:\/\/[^\s]+/g)].map((m) => m[0]);
+    const offNaver = links.filter((l) => !/naver\.com/i.test(l));
+    if (!offNaver.length) throw new Error("every result was a naver.com link");
+    webUrl = offNaver[0];
+    return out;
+  });
+
+  // read_article must open whatever web search returned, whatever host it is.
+  await step("read_article(generic site from web search)", async () => {
+    if (!webUrl) throw new Error("no external URL from web search");
+    console.log(`--> generic target: ${webUrl}`);
+    const out = await readArticle({ url: webUrl, max_chars: 800 });
+    if (!out.includes("출처: ")) throw new Error("no 출처 line");
+    return out;
+  }, { minChars: 300 });
 
   console.log("=".repeat(72));
   console.log("TOOL TEST SUMMARY");

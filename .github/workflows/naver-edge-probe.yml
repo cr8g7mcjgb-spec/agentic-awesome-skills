@@ -35,6 +35,11 @@ jobs:
         continue-on-error: true
         run: python3 apps/naver-mcp/scripts/naver_probe.py
 
+      - name: Map the wider Naver surfaces
+        if: always()
+        continue-on-error: true
+        run: python3 apps/naver-mcp/scripts/probe_sources.py
+
       - name: Upload probe results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

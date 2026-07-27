@@ -405,6 +405,61 @@ function tistoryReadRoutes(host, path) {
   ];
 }
 
+/**
+ * Any other page: try the article containers, then fall back to the whole
+ * document. Naver's search surfaces link out to government sites, journals and
+ * PDFs-as-HTML that share no common markup, so a permissive reader beats
+ * refusing anything unrecognised.
+ */
+function extractGenericBody(html) {
+  const article = extractArticleBody(html) || extractPostBody(html);
+  if (article) return article;
+
+  // Strip page chrome before falling back, or navigation swamps the body.
+  const stripped = html
+    .replace(/<(nav|header|footer|aside|form)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<div[^>]*(?:class|id)="[^"]*(?:gnb|lnb|snb|nav|menu|footer|header|banner|sidebar)[^"]*"[^>]*>[\s\S]{0,4000}?<\/div>/gi, " ");
+
+  for (const re of [
+    /<main[^>]*>([\s\S]*?)<\/main>/i,
+    /<div[^>]*(?:id|class)="[^"]*(?:content|container|board|view|body)[^"]*"[^>]*>([\s\S]*)/i,
+  ]) {
+    const m = stripped.match(re);
+    if (m) {
+      const text = htmlToText(m[1]);
+      if (text.length > 200) return { strategy: "generic-container", text };
+    }
+  }
+
+  const text = htmlToText(stripped);
+  return text.length > 200 ? { strategy: "whole-document", text } : null;
+}
+
+/** Read any URL: fetch it directly, then let the reader proxy try. */
+function genericReadRoutes(url) {
+  const parse = (html) => {
+    const body = extractGenericBody(html);
+    if (!body) return null;
+    return { title: extractTitle(html), date: extractDate(html), ...body };
+  };
+  let origin = "";
+  try {
+    origin = new URL(url).origin + "/";
+  } catch {
+    origin = "";
+  }
+  return [
+    { name: "direct", url, referer: origin || null, parse },
+    {
+      name: "jina",
+      url: `https://r.jina.ai/${url}`,
+      referer: null,
+      timeoutMs: 40000,
+      parse: (md) => parseJinaMarkdown(md),
+    },
+  ];
+}
+
 /** r.jina.ai returns markdown behind a small "Title:/URL Source:" preamble. */
 function parseJinaMarkdown(md) {
   if (!md || md.length < 200) return null;
@@ -707,10 +762,82 @@ async function readArticle({ url, max_chars }) {
     })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
   }
 
-  throw new NaverError(
-    "BAD_INPUT",
-    "Could not tell what kind of page that is. Supported: naver blog, naver news, public naver cafe, tistory, and blog hosts using /{postId} or /entry/{slug}.",
-    { url: raw }
+  // Anything else - government sites, journals, ordinary news - reads through
+  // the generic path. Naver's search links out to all of these, so refusing
+  // unrecognised hosts would make search results unopenable.
+  const post = await readViaChain(genericReadRoutes(raw));
+  let host = raw;
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    /* keep the raw string */
+  }
+  return `${articleHeader({
+    title: post.title,
+    fallback: host,
+    source: raw,
+    date: post.date,
+    route: post.route,
+    strategy: post.strategy,
+    extra: `사이트: ${host}`,
+  })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+}
+
+/* --------------------------------------------------- 2c. integrated web search */
+
+// Naver's own assets and shortener links are not results.
+const NOT_A_RESULT =
+  /(?:^|\.)(?:naver\.net|pstatic\.net|nstatic\.net|naver\.com\/?$|nid\.naver|help\.naver|policy\.naver|adcr\.naver)/i;
+
+/**
+ * Search Naver's web tab, which reaches past blogs and news into government
+ * sites, institutes and journals - the sources that make Naver worth querying
+ * for Korean material in the first place.
+ */
+async function naverWebSearch({ query, count = 10 }) {
+  if (!query || !String(query).trim()) {
+    throw new NaverError("BAD_INPUT", "query is required");
+  }
+  const want = clampCount(count);
+  const seen = new Map();
+
+  for (let start = 1; seen.size < want && start <= 31; start += 15) {
+    const url =
+      `https://m.search.naver.com/search.naver?ssc=tab.m_web.all&where=m_web` +
+      `&query=${encodeURIComponent(query)}&start=${start}`;
+    const html = await httpGet(url, { referer: SEARCH_REFERER });
+
+    const re = /<a\b[^>]*\bhref="(https?:\/\/[^"]+)"[^>]*>([\s\S]{0,1200}?)<\/a>/gi;
+    let m;
+    const before = seen.size;
+    while ((m = re.exec(html)) !== null && seen.size < want) {
+      const link = m[1].replace(/&amp;/g, "&");
+      let host;
+      try {
+        host = new URL(link).hostname;
+      } catch {
+        continue;
+      }
+      if (NOT_A_RESULT.test(host) || host.endsWith("search.naver.com")) continue;
+      if (seen.has(link)) continue;
+      const title = cleanTitle(m[2]);
+      if (!title) continue; // chrome links carry no usable title
+      seen.set(link, { title, host });
+    }
+    if (seen.size === before) break;
+    if (seen.size < want) await sleep(600);
+  }
+
+  const items = [...seen.entries()].slice(0, want);
+  if (!items.length) {
+    throw new NaverError("PARSE_FAILED", "Web search loaded but no external results were found.", { query });
+  }
+  const lines = items.map(
+    ([link, v], i) => `${i + 1}. ${v.title}\n   ${link}\n   (${v.host})`
+  );
+  return (
+    `"${query}" 네이버 웹 검색 결과 ${items.length}건\n\n${lines.join("\n")}\n\n` +
+    `(본문이 필요하면 read_article 에 위 URL을 넣으세요.)`
   );
 }
 
@@ -962,16 +1089,28 @@ const TOOLS = [
     },
   },
   {
+    name: "naver_web_search",
+    description:
+      "네이버 웹 검색(통합검색의 웹 탭)으로 블로그·뉴스 바깥의 사이트까지 찾는다. 정부기관, 공공기관(예: 한국소비자원), 연구소, 학술·전문 자료처럼 블로그 검색으로는 안 잡히는 한국어 자료를 찾을 때 써라. 결과 URL은 read_article 로 본문을 읽을 수 있다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "검색어" },
+        count: { type: "integer", description: "가져올 개수 (1-100, 기본 10)", minimum: 1, maximum: 100 },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "read_article",
     description:
-      "URL 하나로 본문을 읽는다. 네이버 블로그/뉴스/공개 카페, 티스토리, 그 밖의 일반 블로그를 URL 모양으로 알아서 구분해 처리한다. 어떤 링크인지 확실하지 않으면 이 도구를 써라. 응답 맨 위에 항상 출처 링크가 포함된다.",
+      "URL 하나로 본문을 읽는다. 네이버 블로그/뉴스/공개 카페, 티스토리는 전용 추출기로, 그 밖의 모든 사이트(정부·공공기관, 연구소, 언론사 등)는 범용 추출기로 처리한다. 검색 결과에서 얻은 링크는 종류를 가리지 말고 이 도구에 넣어라. 응답 맨 위에 항상 출처 링크가 포함된다.",
     inputSchema: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description:
-            "글 URL. blog.naver.com / cafe.naver.com / n.news.naver.com / *.tistory.com 등",
+          description: "글 URL. 어떤 사이트든 가능하다.",
         },
         max_chars: {
           type: "integer",
@@ -1103,7 +1242,15 @@ async function handleRpc(msg) {
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          "네이버 블로그/뉴스/카페/플레이스 본문을 가져오는 서버입니다. 검색으로 URL을 찾고 read 도구로 본문을 읽으세요.",
+          "네이버에서 한국어 자료를 찾아 본문까지 읽는 서버입니다.\n\n" +
+          "쓰는 순서: ① 검색 도구로 URL을 찾고 ② read_article 로 본문을 읽는다.\n" +
+          "- 블로그/후기/맛집 → naver_blog_search\n" +
+          "- 뉴스 → naver_news_search\n" +
+          "- 정부·공공기관(한국소비자원 등), 연구소, 학술·전문 자료 → naver_web_search\n" +
+          "- 카페 공개글 → naver_cafe_search\n\n" +
+          "read_article 은 사이트 종류를 가리지 않는다. 검색으로 얻은 링크는 " +
+          "네이버든 티스토리든 정부 사이트든 그대로 넣으면 된다.\n" +
+          "모든 본문 응답에는 출처 링크가 포함되므로, 사용자에게 답할 때 그 링크를 함께 제시하라.",
       });
     }
     case "tools/list":

@@ -397,6 +397,61 @@ export function tistoryReadRoutes(host, path) {
   ];
 }
 
+/**
+ * Any other page: try the article containers, then fall back to the whole
+ * document. Naver's search surfaces link out to government sites, journals and
+ * PDFs-as-HTML that share no common markup, so a permissive reader beats
+ * refusing anything unrecognised.
+ */
+function extractGenericBody(html) {
+  const article = extractArticleBody(html) || extractPostBody(html);
+  if (article) return article;
+
+  // Strip page chrome before falling back, or navigation swamps the body.
+  const stripped = html
+    .replace(/<(nav|header|footer|aside|form)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<div[^>]*(?:class|id)="[^"]*(?:gnb|lnb|snb|nav|menu|footer|header|banner|sidebar)[^"]*"[^>]*>[\s\S]{0,4000}?<\/div>/gi, " ");
+
+  for (const re of [
+    /<main[^>]*>([\s\S]*?)<\/main>/i,
+    /<div[^>]*(?:id|class)="[^"]*(?:content|container|board|view|body)[^"]*"[^>]*>([\s\S]*)/i,
+  ]) {
+    const m = stripped.match(re);
+    if (m) {
+      const text = htmlToText(m[1]);
+      if (text.length > 200) return { strategy: "generic-container", text };
+    }
+  }
+
+  const text = htmlToText(stripped);
+  return text.length > 200 ? { strategy: "whole-document", text } : null;
+}
+
+/** Read any URL: fetch it directly, then let the reader proxy try. */
+export function genericReadRoutes(url) {
+  const parse = (html) => {
+    const body = extractGenericBody(html);
+    if (!body) return null;
+    return { title: extractTitle(html), date: extractDate(html), ...body };
+  };
+  let origin = "";
+  try {
+    origin = new URL(url).origin + "/";
+  } catch {
+    origin = "";
+  }
+  return [
+    { name: "direct", url, referer: origin || null, parse },
+    {
+      name: "jina",
+      url: `https://r.jina.ai/${url}`,
+      referer: null,
+      timeoutMs: 40000,
+      parse: (md) => parseJinaMarkdown(md),
+    },
+  ];
+}
+
 /** r.jina.ai returns markdown behind a small "Title:/URL Source:" preamble. */
 export function parseJinaMarkdown(md) {
   if (!md || md.length < 200) return null;
