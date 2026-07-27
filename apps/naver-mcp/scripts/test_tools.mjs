@@ -138,14 +138,29 @@ const run = async () => {
   // 3. cafe + place
   await step("naver_cafe_search('캠핑 후기', 5)", () => naverCafeSearch({ query: "캠핑 후기", count: 5 }));
 
-  await step("read_article(naver cafe)", async () => {
-    const list = await naverCafeSearch({ query: "캠핑 후기", count: 3 });
-    const hit = list.match(/https:\/\/cafe\.naver\.com\/[A-Za-z0-9_-]+\/\d+/);
-    if (!hit) throw new Error("no cafe URL from search");
-    console.log(`--> cafe target: ${hit[0]}`);
-    const out = await readArticle({ url: hit[0], max_chars: 800 });
-    if (!out.includes("출처: ")) throw new Error("no 출처 line");
-    return out;
+  // Many cafe posts are members-only, so a single sample is a coin flip. Walk
+  // several and require that at least one public post reads, while checking
+  // that the members-only ones fail as LOGIN_REQUIRED rather than as a
+  // parsing bug - that distinction is what the user sees.
+  await step("read_article(naver cafe) - at least one public post reads", async () => {
+    const list = await naverCafeSearch({ query: "캠핑 후기", count: 8 });
+    const urls = [...list.matchAll(/https:\/\/cafe\.naver\.com\/[A-Za-z0-9_-]+\/\d+/g)].map((m) => m[0]);
+    if (!urls.length) throw new Error("no cafe URLs from search");
+
+    const outcomes = [];
+    for (const u of urls.slice(0, 5)) {
+      try {
+        const out = await readArticle({ url: u, max_chars: 800 });
+        if (!out.includes("출처: ")) throw new Error("no 출처 line");
+        console.log(`--> readable: ${u}`);
+        outcomes.push("OK");
+        return `${outcomes.length} tried, readable at ${u}\n\n${out}`;
+      } catch (e) {
+        console.log(`--> ${e.kind || "ERROR"}: ${u}`);
+        outcomes.push(e.kind || "ERROR");
+      }
+    }
+    throw new Error(`no readable public cafe post in ${outcomes.length}: ${outcomes.join(", ")}`);
   }, { minChars: 300 });
   await step("naver_place_reviews('성수동 카페', 5)", () => naverPlaceReviews({ query: "성수동 카페", count: 5 }));
 

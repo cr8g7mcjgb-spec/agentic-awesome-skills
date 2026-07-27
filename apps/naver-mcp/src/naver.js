@@ -348,12 +348,32 @@ export function extractArticleBody(html) {
   return null;
 }
 
+// A cafe article behind a login looks like a successful fetch, so it has to be
+// recognised by content or it gets reported as a parsing bug.
+const LOGIN_WALL = [
+  "nid.naver.com/nidlogin",
+  "로그인이 필요합니다",
+  "카페 가입",
+  "가입하신 후 이용",
+  "멤버만 볼 수 있",
+  "등급이 되어야",
+  "권한이 없습니다",
+];
+
 /** Naver cafe public articles. Member-only boards need a login and will fail. */
 export function cafeReadRoutes(cafeId, articleId) {
   const parse = (html) => {
     const body = extractPostBody(html) || extractArticleBody(html);
-    if (!body) return null;
-    return { title: extractTitle(html), date: extractDate(html), ...body };
+    if (body) return { title: extractTitle(html), date: extractDate(html), ...body };
+    // No body: say *why*, so "members only" is not reported as a layout problem.
+    if (LOGIN_WALL.some((sign) => html.includes(sign))) {
+      throw new NaverError(
+        "LOGIN_REQUIRED",
+        "This cafe post is members-only; it cannot be read without signing in.",
+        { cafeId, articleId }
+      );
+    }
+    return null;
   };
   return [
     {
@@ -495,14 +515,22 @@ export async function readViaChain(routes, order) {
     }
   }
 
-  const blocked = trace.filter((t) => t.result === "BLOCKED").length;
-  const kind = blocked === trace.length ? "BLOCKED" : "PARSE_FAILED";
-  const err = new NaverError(
-    kind,
-    kind === "BLOCKED"
-      ? "All routes were blocked by Naver."
-      : "Reached Naver but could not extract a post body on any route.",
-    { trace }
-  );
-  throw err;
+  // When every route agrees on why it failed, report that reason rather than
+  // flattening a login wall or a block into "could not parse".
+  const kinds = new Set(trace.map((t) => t.result));
+  const only = kinds.size === 1 ? [...kinds][0] : null;
+  const kind = only === "BLOCKED" || only === "LOGIN_REQUIRED" || only === "NOT_FOUND"
+    ? only
+    : trace.some((t) => t.result === "LOGIN_REQUIRED")
+      ? "LOGIN_REQUIRED"
+      : "PARSE_FAILED";
+
+  const message = {
+    BLOCKED: "All routes were blocked by Naver.",
+    LOGIN_REQUIRED: "This post is members-only or private; it cannot be read without signing in.",
+    NOT_FOUND: "The post does not exist, or has been deleted.",
+    PARSE_FAILED: "Reached the page but could not extract a body on any route.",
+  }[kind];
+
+  throw new NaverError(kind, message, { trace });
 }
