@@ -93,3 +93,34 @@ jobs:
         with:
           name: worker-bundle
           path: apps/naver-mcp/dist/worker.js
+
+  # Verifies a Worker someone deployed by hand. The URL lives in a file rather
+  # than a workflow_dispatch input because dispatch inputs are only offered for
+  # workflows already on the default branch.
+  deployed:
+    name: Smoke test a hand-deployed Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+
+      - name: Smoke test the URL in deployed-url.txt
+        working-directory: apps/naver-mcp
+        run: |
+          if [ ! -s deployed-url.txt ]; then
+            echo "No deployed-url.txt yet - nothing to verify."
+            exit 0
+          fi
+          URL=$(grep -m1 -oE 'https://[A-Za-z0-9._-]+' deployed-url.txt || true)
+          if [ -z "$URL" ]; then
+            echo "deployed-url.txt has no https:// URL in it." >&2
+            exit 1
+          fi
+          echo "Testing $URL"
+          node scripts/smoke_mcp.mjs "$URL"
