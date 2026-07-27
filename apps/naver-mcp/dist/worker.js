@@ -452,11 +452,42 @@ function extractGenericBody(html) {
   }
 
   const text = htmlToText(stripped);
-  return text.length > 200 ? { strategy: "whole-document", text } : null;
+  if (text.length <= 200) return null;
+
+  // A page whose only substantial text is navigation is not a body. Returning
+  // it would let a caller summarise the menu as if it were the article.
+  const chrome = SHELL_MARKERS.filter((re) => re.test(text)).length;
+  if (chrome >= 2 && text.length < 3000) return null;
+
+  return { strategy: "whole-document", text };
 }
+
+// Sites whose content is drawn client side from an API the reader proxy cannot
+// reach. They return a shell that looks like a successful read - menus, login
+// links, button labels - which is worse than an error, because a caller will
+// summarise the chrome as if it were the page.
+const CLIENT_RENDERED = [
+  {
+    match: /(?:place\.map|map)\.kakao\.com/i,
+    name: "카카오맵",
+    note: "카카오맵은 리뷰를 브라우저에서 따로 불러오는 구조라 본문을 읽을 수 없습니다. 네이버 플레이스 리뷰(naver_restaurant_reviews)를 대신 쓰세요.",
+  },
+  {
+    match: /tmap\.co\.kr/i,
+    name: "티맵",
+    note: "티맵은 앱 전용이라 웹에 공개된 리뷰 페이지가 없습니다. 네이버 플레이스 리뷰(naver_restaurant_reviews)를 대신 쓰세요.",
+  },
+];
+
+/** Page chrome that proves a "successful" read actually returned nothing. */
+const SHELL_MARKERS = [/지도 검색/, /서제스트/, /본문 바로가기/, /메뉴 바로가기/];
 
 /** Read any URL: fetch it directly, then let the reader proxy try. */
 function genericReadRoutes(url) {
+  const known = CLIENT_RENDERED.find((s) => s.match.test(url));
+  if (known) {
+    throw new NaverError("CLIENT_RENDERED", `${known.name}: ${known.note}`, { url });
+  }
   const parse = (html) => {
     const body = extractGenericBody(html);
     if (!body) return null;
@@ -1400,6 +1431,8 @@ function describeFailure(err) {
           "네이버 페이지는 정상적으로 받았지만 본문 영역을 찾지 못했습니다. 차단이 아니라 레이아웃 문제입니다.",
         LOGIN_REQUIRED:
           "회원 전용/비공개 글이라 로그인 없이는 읽을 수 없습니다. 서버 문제가 아니므로 재시도해도 소용없습니다. 사용자에게 '이 글은 회원 전용이라 열람할 수 없다'고 알리고, 검색 결과의 다른 글을 시도하세요.",
+        CLIENT_RENDERED:
+          "이 사이트는 내용을 브라우저에서 따로 불러오는 구조라 서버가 본문을 읽을 수 없습니다. 재시도해도 소용없습니다. 사용자에게 그 사이트는 읽을 수 없다고 알리고, 안내에 적힌 대체 도구를 쓰세요.",
         NOT_FOUND: "해당 글이 존재하지 않거나 삭제/비공개 상태입니다.",
         BAD_INPUT: "입력값이 올바르지 않습니다.",
         TRANSPORT: "네트워크 요청 자체가 실패했습니다.",

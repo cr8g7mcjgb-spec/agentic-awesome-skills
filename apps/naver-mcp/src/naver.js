@@ -444,11 +444,42 @@ function extractGenericBody(html) {
   }
 
   const text = htmlToText(stripped);
-  return text.length > 200 ? { strategy: "whole-document", text } : null;
+  if (text.length <= 200) return null;
+
+  // A page whose only substantial text is navigation is not a body. Returning
+  // it would let a caller summarise the menu as if it were the article.
+  const chrome = SHELL_MARKERS.filter((re) => re.test(text)).length;
+  if (chrome >= 2 && text.length < 3000) return null;
+
+  return { strategy: "whole-document", text };
 }
+
+// Sites whose content is drawn client side from an API the reader proxy cannot
+// reach. They return a shell that looks like a successful read - menus, login
+// links, button labels - which is worse than an error, because a caller will
+// summarise the chrome as if it were the page.
+const CLIENT_RENDERED = [
+  {
+    match: /(?:place\.map|map)\.kakao\.com/i,
+    name: "카카오맵",
+    note: "카카오맵은 리뷰를 브라우저에서 따로 불러오는 구조라 본문을 읽을 수 없습니다. 네이버 플레이스 리뷰(naver_restaurant_reviews)를 대신 쓰세요.",
+  },
+  {
+    match: /tmap\.co\.kr/i,
+    name: "티맵",
+    note: "티맵은 앱 전용이라 웹에 공개된 리뷰 페이지가 없습니다. 네이버 플레이스 리뷰(naver_restaurant_reviews)를 대신 쓰세요.",
+  },
+];
+
+/** Page chrome that proves a "successful" read actually returned nothing. */
+const SHELL_MARKERS = [/지도 검색/, /서제스트/, /본문 바로가기/, /메뉴 바로가기/];
 
 /** Read any URL: fetch it directly, then let the reader proxy try. */
 export function genericReadRoutes(url) {
+  const known = CLIENT_RENDERED.find((s) => s.match.test(url));
+  if (known) {
+    throw new NaverError("CLIENT_RENDERED", `${known.name}: ${known.note}`, { url });
+  }
   const parse = (html) => {
     const body = extractGenericBody(html);
     if (!body) return null;
