@@ -114,16 +114,41 @@ export async function httpGet(url, { referer, timeoutMs = 15000, retries = 2 } =
 const SCRIPT_RE = /<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi;
 const BLOCK_END_RE = /<\/(p|div|li|h[1-6]|blockquote|tr)>|<br\s*\/?>/gi;
 
+// "&amp;" is deliberately absent: it must be decoded last, after every other
+// entity, or "&amp;#x27;" (a literal "&#x27;" in the source) turns into an
+// apostrophe instead of the text the author actually wrote.
 const ENTITIES = {
-  "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
-  "&quot;": '"', "&#39;": "'", "&apos;": "'", "&middot;": "·",
+  "&nbsp;": " ", "&lt;": "<", "&gt;": ">",
+  "&quot;": '"', "&apos;": "'", "&middot;": "·",
 };
+
+/** Decode every entity form in the correct order, "&amp;" last. */
+function decodeAllEntities(s) {
+  let out = decodeNumericEntities(String(s || ""));
+  for (const [k, v] of Object.entries(ENTITIES)) out = out.split(k).join(v);
+  return out.split("&amp;").join("&");
+}
+
+/**
+ * Decode numeric character references. Naver's editor emits the hex form
+ * (`&#x27;` for an apostrophe) far more often than the decimal one, so
+ * handling only decimals leaves literal `&#x27;` sitting in the output.
+ */
+function decodeNumericEntities(s) {
+  return s
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => {
+      const cp = parseInt(h, 16);
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    })
+    .replace(/&#(\d+);/g, (m, d) => {
+      const cp = Number(d);
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    });
+}
 
 export function htmlToText(html) {
   let s = String(html || "").replace(SCRIPT_RE, " ").replace(BLOCK_END_RE, "\n");
-  s = s.replace(/<[^>]+>/g, " ");
-  for (const [k, v] of Object.entries(ENTITIES)) s = s.split(k).join(v);
-  s = s.replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)));
+  s = decodeAllEntities(s.replace(/<[^>]+>/g, " "));
   return s
     .split("\n")
     .map((ln) => ln.replace(/[ \t​ ]+/g, " ").trim())
@@ -133,9 +158,7 @@ export function htmlToText(html) {
 }
 
 export function decodeEntities(s) {
-  let out = String(s || "");
-  for (const [k, v] of Object.entries(ENTITIES)) out = out.split(k).join(v);
-  return out.replace(/<[^>]+>/g, "").trim();
+  return decodeAllEntities(s).replace(/<[^>]+>/g, "").trim();
 }
 
 /**

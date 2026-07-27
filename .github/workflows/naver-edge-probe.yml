@@ -69,7 +69,9 @@ jobs:
 
       - name: Exercise every tool
         working-directory: apps/naver-mcp
-        run: node scripts/test_tools.mjs
+        run: |
+          node scripts/test_entities.mjs
+          node scripts/test_tools.mjs
 
       - name: Build the pasteable single-file bundle
         working-directory: apps/naver-mcp
