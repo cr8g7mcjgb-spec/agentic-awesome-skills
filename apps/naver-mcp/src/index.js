@@ -263,10 +263,14 @@ async function handleRpc(msg) {
   }
 }
 
+// Browsers otherwise keep serving an older deploy's landing page and tool
+// list, which looks exactly like the deploy having silently failed.
+const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
+
 const json = (body, status = 200, extra = {}) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS, ...extra },
+    headers: { "Content-Type": "application/json", ...CORS, ...NO_STORE, ...extra },
   });
 
 const LANDING = `<!doctype html><meta charset="utf-8">
@@ -292,7 +296,9 @@ export default {
     }
 
     if (path === "/" && request.method === "GET") {
-      return new Response(LANDING, { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
+      return new Response(LANDING, {
+        headers: { "Content-Type": "text/html; charset=utf-8", ...CORS, ...NO_STORE },
+      });
     }
 
     if (path === "/mcp" || path === "/sse") {
