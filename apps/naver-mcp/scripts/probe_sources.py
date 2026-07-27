@@ -40,6 +40,52 @@ TARGETS = [
      r"소비자|kca"),
 ]
 
+def discover(query, pattern):
+    """Find a live URL through Naver's web tab instead of hardcoding one."""
+    _, text, _ = fetch(
+        f"https://m.search.naver.com/search.naver?ssc=tab.m_web.all&query={urllib.parse.quote(query)}",
+        referer="https://m.search.naver.com/",
+    )
+    m = re.search(pattern, text or "")
+    return m.group(0) if m else None
+
+
+# Map review sites render their content with JavaScript, so a plain fetch may
+# only see the shell. Probe both the page and the reader proxy to find out.
+print("=" * 78)
+print("MAP REVIEW SITES")
+print("=" * 78)
+
+kakao = discover("맛집 후기 place.map.kakao.com", r"https?://place\.map\.kakao\.com/\d+")
+tmap = discover("맛집 tmap 리뷰", r"https?://[a-z.]*tmap\.co\.kr/[^\"'\s]{4,60}")
+print(f"discovered kakao: {kakao}")
+print(f"discovered tmap : {tmap}\n")
+
+for label, url in [
+    ("kakao place (direct)", kakao),
+    ("kakao place (jina)", f"https://r.jina.ai/{kakao}" if kakao else None),
+    ("kakao place API (main/v)",
+     re.sub(r"place\.map\.kakao\.com/(\d+)", r"place.map.kakao.com/main/v/\1", kakao) if kakao else None),
+    ("tmap (direct)", tmap),
+    ("tmap (jina)", f"https://r.jina.ai/{tmap}" if tmap else None),
+]:
+    if not url:
+        print(f"[SKIP] {label} - no URL discovered\n")
+        continue
+    status, text, err = fetch(url, timeout=40)
+    # A review page is only useful if Korean review-ish text actually arrived.
+    hangul = len(re.findall(r"[가-힣]", text or ""))
+    reviewish = len(re.findall(r"리뷰|후기|평점|별점", text or ""))
+    verdict = "OK" if status == 200 and hangul > 400 and reviewish > 0 else "NO CONTENT"
+    print(f"[{verdict}] {label}")
+    print(f"       url     : {url[:110]}")
+    print(f"       status  : {status} err={err}")
+    print(f"       bytes   : {len(text or '')}, hangul={hangul}, review-words={reviewish}")
+    if text and hangul > 100:
+        snippet = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))[:200]
+        print(f"       sample  : {snippet}")
+    print()
+
 rows = []
 for label, url, pattern in TARGETS:
     status, text, err = fetch(url, referer="https://m.search.naver.com/")
