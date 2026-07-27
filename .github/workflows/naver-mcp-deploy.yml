@@ -11,7 +11,7 @@ name: Naver MCP Deploy
 on:
   workflow_dispatch:
   push:
-    branches: ["claude/naver-content-mcp-server-9h9t07"]
+    branches: ["main", "claude/naver-content-mcp-server-9h9t07"]
     paths:
       - "apps/naver-mcp/src/**"
       - "apps/naver-mcp/wrangler.toml"
@@ -25,8 +25,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The probe runs here rather than being read across from naver-edge-probe.yml:
+  # GitHub schedules the two workflows independently, so a green run there is no
+  # guarantee at this moment. Without this gate a deploy could replace a working
+  # Worker while every Naver route is blocked, and the post-deploy smoke test
+  # would only notice after the rollout, with nothing to roll back to.
+  probe:
+    name: Step-0 gate before deploying
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify Naver still answers from the edge
+        run: python3 apps/naver-mcp/scripts/naver_probe.py
+
   deploy:
     name: Deploy to Cloudflare Workers and verify
+    needs: probe
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

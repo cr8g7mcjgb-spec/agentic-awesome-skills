@@ -83,6 +83,16 @@ const run = async () => {
     }, { minChars: 300 });
   }
 
+  // Titles must survive the result quota: the real title for a URL often sits
+  // in a later anchor than the one that first introduced it, so a scan that
+  // stops at `want` leaves entries blank.
+  await step("naver_blog_search titles are not blank", async () => {
+    const out = await naverBlogSearch({ query: "제주도 맛집", count: 5 });
+    const blanks = (out.match(/\(제목 미확인\)/g) || []).length;
+    if (blanks > 1) throw new Error(`${blanks}/5 results have no title`);
+    return out;
+  });
+
   // 2. news
   let newsUrl = null;
   await step("naver_news_search('금리', 5)", async () => {

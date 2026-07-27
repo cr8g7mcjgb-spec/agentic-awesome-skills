@@ -423,10 +423,14 @@ function collectHits(html, urlSource, into, want) {
 
   anchor.lastIndex = 0;
   let m;
-  while ((m = anchor.exec(html)) !== null && into.size < want) {
+  while ((m = anchor.exec(html)) !== null) {
     const k = key(m);
-    const title = cleanTitle(m[m.length - 1]);
     const prev = into.get(k);
+    // Keep scanning once the quota is full: the real title for an already
+    // collected URL often sits in a later anchor, and stopping here would
+    // leave it blank. Only *new* keys are refused past the quota.
+    if (!prev && into.size >= want) continue;
+    const title = cleanTitle(m[m.length - 1]);
     // The same URL appears in several anchors ("더보기", the snippet, the
     // title). Let a later real title replace an earlier empty one instead of
     // letting whichever came first win.
@@ -670,12 +674,22 @@ async function naverPlaceReviews({ query, count = 10 }) {
 
   // Place "blog reviews" are ordinary blog posts about the place, so the most
   // reliable route is the blog tab scoped by the place name plus 리뷰/후기.
-  const url =
-    `https://m.search.naver.com/search.naver?ssc=tab.m_blog.all` +
-    `&query=${encodeURIComponent(query + " 후기")}&start=1`;
-  const html = await httpGet(url, { referer: SEARCH_REFERER });
+  const src = urlSource(BLOG_PATTERN, pairKey);
+  const seen = new Map();
+  let html = "";
 
-  const seen = collectHits(html, urlSource(BLOG_PATTERN, pairKey), new Map(), want);
+  for (let start = 1; seen.size < want && start <= 91; start += PAGE_SIZE) {
+    const url =
+      `https://m.search.naver.com/search.naver?ssc=tab.m_blog.all` +
+      `&query=${encodeURIComponent(query + " 후기")}&start=${start}`;
+    const page = await httpGet(url, { referer: SEARCH_REFERER });
+    if (start === 1) html = page; // first page also carries the place cards
+
+    const before = seen.size;
+    collectHits(page, src, seen, want);
+    if (seen.size === before) break;
+    if (seen.size < want) await sleep(600);
+  }
 
   const placeIds = [
     ...new Set(

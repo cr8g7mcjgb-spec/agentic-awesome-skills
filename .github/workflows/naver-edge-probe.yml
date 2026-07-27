@@ -7,7 +7,7 @@ name: Naver Edge Probe
 
 on:
   push:
-    branches: ["claude/naver-content-mcp-server-9h9t07"]
+    branches: ["main", "claude/naver-content-mcp-server-9h9t07"]
     paths:
       - "apps/naver-mcp/**"
       - ".github/workflows/naver-edge-probe.yml"
