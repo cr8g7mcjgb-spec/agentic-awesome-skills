@@ -14,6 +14,7 @@ import {
   naverPlaceReviews,
   readArticle,
   naverWebSearch,
+  naverRestaurantReviews,
 } from "../src/tools.js";
 
 import { httpGet } from "../src/naver.js";
@@ -184,6 +185,21 @@ const run = async () => {
     if (!out.includes("출처: ")) throw new Error("no 출처 line");
     return out;
   }, { minChars: 300 });
+
+  // The star-rated visitor reviews are the point of this tool - a response
+  // that only carried blog links would look fine but miss what was asked for.
+  await step("naver_restaurant_reviews('성수동 맛집')", async () => {
+    const out = await naverRestaurantReviews({ query: "성수동 맛집", count: 5 });
+    if (!out.includes("방문자 리뷰")) throw new Error("no visitor review section");
+    if (!out.includes("m.place.naver.com")) throw new Error("no place link");
+    const section = out.split("## 방문자 리뷰")[1] || "";
+    if (/\[(?:PARSE_FAILED|BLOCKED|ERROR|TRANSPORT)\]/.test(section)) {
+      throw new Error(`visitor reviews failed: ${section.slice(0, 160)}`);
+    }
+    // Numbered entries mean real reviews came back, not an empty shell.
+    if (!/\n1\. \S/.test(section)) throw new Error("visitor section has no numbered reviews");
+    return out;
+  }, { minChars: 400 });
 
   console.log("=".repeat(72));
   console.log("TOOL TEST SUMMARY");

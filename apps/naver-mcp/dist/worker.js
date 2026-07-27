@@ -480,6 +480,84 @@ function genericReadRoutes(url) {
   ];
 }
 
+/**
+ * Pull visitor reviews out of a Naver Place page.
+ *
+ * The page ships its data as an Apollo cache in a script tag, so the review
+ * text is present in the HTML even though the visible list is rendered client
+ * side. Reading the cache is far steadier than matching rendered markup.
+ */
+function extractVisitorReviews(html, limit = 20) {
+  const out = [];
+  const seen = new Set();
+
+  const push = (text, rating, author, date) => {
+    const t = htmlToText(String(text || "")).trim();
+    // Korean text of some length is what separates a review from a UI label.
+    if (t.length < 10 || !/[가-힣]/.test(t) || seen.has(t)) return;
+    seen.add(t);
+    out.push({ text: t, rating: rating ?? null, author: author || "", date: date || "" });
+  };
+
+  const state = html.match(/__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/);
+  if (state) {
+    try {
+      const cache = JSON.parse(state[1]);
+      for (const v of Object.values(cache)) {
+        if (out.length >= limit) break;
+        if (!v || typeof v !== "object") continue;
+        const body = v.body ?? v.reviewBody ?? v.content;
+        if (typeof body !== "string") continue;
+        push(body, v.rating ?? v.starRating, v.author?.nickname ?? v.authorNickname, v.created ?? v.visited ?? v.visitDate);
+      }
+    } catch {
+      // Malformed or truncated cache - the scan below still finds bodies.
+    }
+  }
+
+  if (out.length < limit) {
+    const re = /"(?:body|reviewBody)"\s*:\s*"((?:[^"\\]|\\.){15,2000})"/g;
+    let m;
+    while ((m = re.exec(html)) !== null && out.length < limit) {
+      try {
+        push(JSON.parse(`"${m[1]}"`));
+      } catch {
+        // Not valid JSON string escaping; skip this one.
+      }
+    }
+  }
+  return out;
+}
+
+/** Visitor-review pages for a place, mobile first then the desktop map. */
+function visitorReviewRoutes(placeId, kind = "restaurant") {
+  const parse = (html) => {
+    const reviews = extractVisitorReviews(html);
+    if (!reviews.length) return null;
+    return {
+      strategy: "apollo-state",
+      title: extractTitle(html),
+      date: "",
+      reviews,
+      text: reviews.map((r) => r.text).join("\n\n"),
+    };
+  };
+  return [
+    {
+      name: "m.place",
+      url: `https://m.place.naver.com/${kind}/${placeId}/review/visitor`,
+      referer: "https://m.search.naver.com/",
+      parse,
+    },
+    {
+      name: "pcmap",
+      url: `https://pcmap.place.naver.com/${kind}/${placeId}/review/visitor`,
+      referer: "https://map.naver.com/",
+      parse,
+    },
+  ];
+}
+
 /** r.jina.ai returns markdown behind a small "Title:/URL Source:" preamble. */
 function parseJinaMarkdown(md) {
   if (!md || md.length < 200) return null;
@@ -1000,6 +1078,74 @@ async function naverCafeSearch({ query, count = 10 }) {
   return `"${query}" 카페 검색 결과 ${items.length}건 (공개글만)\n\n${lines.join("\n")}`;
 }
 
+/* --------------------------------------------------- 6b. restaurant reviews */
+
+/** Find a place id for a name, from the integrated results page. */
+async function findPlaceId(query) {
+  const html = await httpGet(
+    `https://m.search.naver.com/search.naver?query=${encodeURIComponent(query)}`,
+    { referer: SEARCH_REFERER }
+  );
+  // Place cards appear only on the integrated page, not the web tab.
+  const m =
+    html.match(/(?:place|pcmap\.place)\.naver\.com\/(restaurant|place|accommodation)\/(\d+)/) ||
+    html.match(/place\.naver\.com\/(?:restaurant|place)\/(\d+)/);
+  if (!m) return null;
+  return m.length > 2 ? { kind: m[1], id: m[2] } : { kind: "restaurant", id: m[1] };
+}
+
+/**
+ * Everything known about one restaurant: the star-rated visitor reviews and
+ * the blog write-ups, with the links to both.
+ */
+async function naverRestaurantReviews({ query, count = 10 }) {
+  if (!query || !String(query).trim()) {
+    throw new NaverError("BAD_INPUT", "query is required (가게 이름)");
+  }
+  const want = clampCount(count);
+  const place = await findPlaceId(query);
+
+  const sections = [];
+  let visitorLink = null;
+
+  if (place) {
+    visitorLink = `https://m.place.naver.com/${place.kind}/${place.id}/review/visitor`;
+    try {
+      const res = await readViaChain(visitorReviewRoutes(place.id, place.kind));
+      const lines = res.reviews.slice(0, want).map((r, i) => {
+        const meta = [r.rating ? `★${r.rating}` : null, r.author || null, r.date || null]
+          .filter(Boolean)
+          .join(" · ");
+        return `${i + 1}. ${r.text}${meta ? `\n   (${meta})` : ""}`;
+      });
+      sections.push(
+        `## 방문자 리뷰 ${lines.length}건\n출처: ${visitorLink}\n\n${lines.join("\n")}`
+      );
+    } catch (e) {
+      // Say why rather than dropping the section silently.
+      sections.push(
+        `## 방문자 리뷰\n출처: ${visitorLink}\n\n[${e.kind || "ERROR"}] ${e.message}`
+      );
+    }
+  }
+
+  try {
+    sections.push(`## 블로그 후기\n\n${await naverPlaceReviews({ query, count: want })}`);
+  } catch (e) {
+    sections.push(`## 블로그 후기\n\n[${e.kind || "ERROR"}] ${e.message}`);
+  }
+
+  if (!sections.length) {
+    throw new NaverError("PARSE_FAILED", "No reviews of any kind were found.", { query });
+  }
+
+  const header = place
+    ? `# "${query}" 리뷰 모음\n플레이스: https://m.place.naver.com/${place.kind}/${place.id}/home`
+    : `# "${query}" 리뷰 모음\n(플레이스 항목을 찾지 못해 블로그 후기만 모았습니다.)`;
+
+  return `${header}\n\n${sections.join("\n\n---\n\n")}`;
+}
+
 /* ------------------------------------------------------------ 6. place reviews */
 
 async function naverPlaceReviews({ query, count = 10 }) {
@@ -1186,6 +1332,19 @@ const TOOLS = [
       properties: {
         query: { type: "string", description: "검색어" },
         count: { type: "integer", description: "가져올 개수 (1-100, 기본 10)", minimum: 1, maximum: 100 },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "naver_restaurant_reviews",
+    description:
+      "가게 이름 하나로 그 가게 리뷰를 한 번에 모은다. 네이버 플레이스의 별점 방문자 리뷰와 블로그 후기를 함께 돌려주며, 각 섹션에 출처 링크가 붙는다. 맛집·카페·숙소 평판을 볼 때 이 도구를 먼저 써라.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "가게 이름 (예: '성수동 기댈빙', '연남동 파스타집')" },
+        count: { type: "integer", description: "각 섹션당 개수 (1-100, 기본 10)", minimum: 1, maximum: 100 },
       },
       required: ["query"],
     },

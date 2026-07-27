@@ -19,6 +19,7 @@ import {
   cafeReadRoutes,
   tistoryReadRoutes,
   genericReadRoutes,
+  visitorReviewRoutes,
   readViaChain,
   sleep,
 } from "./naver.js";
@@ -467,6 +468,74 @@ export async function naverCafeSearch({ query, count = 10 }) {
     (it, i) => `${i + 1}. ${it.title || "(제목 미확인)"}\n   카페: ${it.cafe}\n   ${it.url}`
   );
   return `"${query}" 카페 검색 결과 ${items.length}건 (공개글만)\n\n${lines.join("\n")}`;
+}
+
+/* --------------------------------------------------- 6b. restaurant reviews */
+
+/** Find a place id for a name, from the integrated results page. */
+async function findPlaceId(query) {
+  const html = await httpGet(
+    `https://m.search.naver.com/search.naver?query=${encodeURIComponent(query)}`,
+    { referer: SEARCH_REFERER }
+  );
+  // Place cards appear only on the integrated page, not the web tab.
+  const m =
+    html.match(/(?:place|pcmap\.place)\.naver\.com\/(restaurant|place|accommodation)\/(\d+)/) ||
+    html.match(/place\.naver\.com\/(?:restaurant|place)\/(\d+)/);
+  if (!m) return null;
+  return m.length > 2 ? { kind: m[1], id: m[2] } : { kind: "restaurant", id: m[1] };
+}
+
+/**
+ * Everything known about one restaurant: the star-rated visitor reviews and
+ * the blog write-ups, with the links to both.
+ */
+export async function naverRestaurantReviews({ query, count = 10 }) {
+  if (!query || !String(query).trim()) {
+    throw new NaverError("BAD_INPUT", "query is required (가게 이름)");
+  }
+  const want = clampCount(count);
+  const place = await findPlaceId(query);
+
+  const sections = [];
+  let visitorLink = null;
+
+  if (place) {
+    visitorLink = `https://m.place.naver.com/${place.kind}/${place.id}/review/visitor`;
+    try {
+      const res = await readViaChain(visitorReviewRoutes(place.id, place.kind));
+      const lines = res.reviews.slice(0, want).map((r, i) => {
+        const meta = [r.rating ? `★${r.rating}` : null, r.author || null, r.date || null]
+          .filter(Boolean)
+          .join(" · ");
+        return `${i + 1}. ${r.text}${meta ? `\n   (${meta})` : ""}`;
+      });
+      sections.push(
+        `## 방문자 리뷰 ${lines.length}건\n출처: ${visitorLink}\n\n${lines.join("\n")}`
+      );
+    } catch (e) {
+      // Say why rather than dropping the section silently.
+      sections.push(
+        `## 방문자 리뷰\n출처: ${visitorLink}\n\n[${e.kind || "ERROR"}] ${e.message}`
+      );
+    }
+  }
+
+  try {
+    sections.push(`## 블로그 후기\n\n${await naverPlaceReviews({ query, count: want })}`);
+  } catch (e) {
+    sections.push(`## 블로그 후기\n\n[${e.kind || "ERROR"}] ${e.message}`);
+  }
+
+  if (!sections.length) {
+    throw new NaverError("PARSE_FAILED", "No reviews of any kind were found.", { query });
+  }
+
+  const header = place
+    ? `# "${query}" 리뷰 모음\n플레이스: https://m.place.naver.com/${place.kind}/${place.id}/home`
+    : `# "${query}" 리뷰 모음\n(플레이스 항목을 찾지 못해 블로그 후기만 모았습니다.)`;
+
+  return `${header}\n\n${sections.join("\n\n---\n\n")}`;
 }
 
 /* ------------------------------------------------------------ 6. place reviews */

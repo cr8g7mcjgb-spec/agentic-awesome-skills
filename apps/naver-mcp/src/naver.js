@@ -472,6 +472,84 @@ export function genericReadRoutes(url) {
   ];
 }
 
+/**
+ * Pull visitor reviews out of a Naver Place page.
+ *
+ * The page ships its data as an Apollo cache in a script tag, so the review
+ * text is present in the HTML even though the visible list is rendered client
+ * side. Reading the cache is far steadier than matching rendered markup.
+ */
+export function extractVisitorReviews(html, limit = 20) {
+  const out = [];
+  const seen = new Set();
+
+  const push = (text, rating, author, date) => {
+    const t = htmlToText(String(text || "")).trim();
+    // Korean text of some length is what separates a review from a UI label.
+    if (t.length < 10 || !/[가-힣]/.test(t) || seen.has(t)) return;
+    seen.add(t);
+    out.push({ text: t, rating: rating ?? null, author: author || "", date: date || "" });
+  };
+
+  const state = html.match(/__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/);
+  if (state) {
+    try {
+      const cache = JSON.parse(state[1]);
+      for (const v of Object.values(cache)) {
+        if (out.length >= limit) break;
+        if (!v || typeof v !== "object") continue;
+        const body = v.body ?? v.reviewBody ?? v.content;
+        if (typeof body !== "string") continue;
+        push(body, v.rating ?? v.starRating, v.author?.nickname ?? v.authorNickname, v.created ?? v.visited ?? v.visitDate);
+      }
+    } catch {
+      // Malformed or truncated cache - the scan below still finds bodies.
+    }
+  }
+
+  if (out.length < limit) {
+    const re = /"(?:body|reviewBody)"\s*:\s*"((?:[^"\\]|\\.){15,2000})"/g;
+    let m;
+    while ((m = re.exec(html)) !== null && out.length < limit) {
+      try {
+        push(JSON.parse(`"${m[1]}"`));
+      } catch {
+        // Not valid JSON string escaping; skip this one.
+      }
+    }
+  }
+  return out;
+}
+
+/** Visitor-review pages for a place, mobile first then the desktop map. */
+export function visitorReviewRoutes(placeId, kind = "restaurant") {
+  const parse = (html) => {
+    const reviews = extractVisitorReviews(html);
+    if (!reviews.length) return null;
+    return {
+      strategy: "apollo-state",
+      title: extractTitle(html),
+      date: "",
+      reviews,
+      text: reviews.map((r) => r.text).join("\n\n"),
+    };
+  };
+  return [
+    {
+      name: "m.place",
+      url: `https://m.place.naver.com/${kind}/${placeId}/review/visitor`,
+      referer: "https://m.search.naver.com/",
+      parse,
+    },
+    {
+      name: "pcmap",
+      url: `https://pcmap.place.naver.com/${kind}/${placeId}/review/visitor`,
+      referer: "https://map.naver.com/",
+      parse,
+    },
+  ];
+}
+
 /** r.jina.ai returns markdown behind a small "Title:/URL Source:" preamble. */
 export function parseJinaMarkdown(md) {
   if (!md || md.length < 200) return null;

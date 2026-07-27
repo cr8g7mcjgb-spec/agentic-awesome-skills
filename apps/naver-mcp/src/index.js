@@ -139,6 +139,19 @@ const TOOLS = [
     },
   },
   {
+    name: "naver_restaurant_reviews",
+    description:
+      "가게 이름 하나로 그 가게 리뷰를 한 번에 모은다. 네이버 플레이스의 별점 방문자 리뷰와 블로그 후기를 함께 돌려주며, 각 섹션에 출처 링크가 붙는다. 맛집·카페·숙소 평판을 볼 때 이 도구를 먼저 써라.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "가게 이름 (예: '성수동 기댈빙', '연남동 파스타집')" },
+        count: { type: "integer", description: "각 섹션당 개수 (1-100, 기본 10)", minimum: 1, maximum: 100 },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "naver_place_reviews",
     description:
       "네이버 플레이스(장소)에 대한 블로그 리뷰 글 목록을 돌려준다. 맛집/카페/숙소 후기를 모을 때 쓴다.",

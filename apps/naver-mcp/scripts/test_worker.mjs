@@ -52,7 +52,7 @@ const run = async () => {
   // --- tool discovery -----------------------------------------------------
   const list = await rpc("tools/list", {});
   const tools = list.body?.result?.tools || [];
-  check("tools/list returns 8 tools", tools.length === 8, tools.map((t) => t.name).join(", "));
+  check("tools/list returns 9 tools", tools.length === 9, tools.map((t) => t.name).join(", "));
   check("every tool has a description and schema",
     tools.every((t) => t.description && t.inputSchema?.type === "object"));
   check("blog_read exposes max_chars",
