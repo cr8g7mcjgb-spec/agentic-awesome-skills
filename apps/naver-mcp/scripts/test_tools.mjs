@@ -12,7 +12,10 @@ import {
   naverNewsRead,
   naverCafeSearch,
   naverPlaceReviews,
+  readArticle,
 } from "../src/tools.js";
+
+import { httpGet } from "../src/naver.js";
 
 let failures = 0;
 const summary = [];
@@ -105,8 +108,44 @@ const run = async () => {
     await step(`naver_news_read(${newsUrl})`, () => naverNewsRead({ url: newsUrl }), { minChars: 200 });
   }
 
+  // read_article must route by URL shape and always print the source link.
+  if (blogUrl) {
+    await step("read_article(naver blog) includes 출처", async () => {
+      const out = await readArticle({ url: blogUrl, max_chars: 800 });
+      if (!out.includes(`출처: `)) throw new Error("no 출처 line");
+      if (!out.includes("blog.naver.com")) throw new Error("source link missing");
+      return out;
+    }, { minChars: 300 });
+  }
+
+  // Tistory: find a live post through Naver's web tab rather than hardcoding
+  // one, so the test does not rot when a single blog disappears.
+  await step("read_article(tistory)", async () => {
+    const q = encodeURIComponent("맛집 후기 site:tistory.com");
+    const html = await httpGet(
+      `https://m.search.naver.com/search.naver?ssc=tab.m_web.all&query=${q}`,
+      { referer: "https://m.search.naver.com/" }
+    );
+    const hit = html.match(/https?:\/\/[a-z0-9-]+\.tistory\.com\/(?:entry\/[^"'?#]+|\d+)/i);
+    if (!hit) throw new Error("no tistory URL found in search results");
+    console.log(`--> tistory target: ${hit[0]}`);
+    const out = await readArticle({ url: hit[0], max_chars: 800 });
+    if (!out.includes("출처: ")) throw new Error("no 출처 line");
+    return out;
+  }, { minChars: 300 });
+
   // 3. cafe + place
   await step("naver_cafe_search('캠핑 후기', 5)", () => naverCafeSearch({ query: "캠핑 후기", count: 5 }));
+
+  await step("read_article(naver cafe)", async () => {
+    const list = await naverCafeSearch({ query: "캠핑 후기", count: 3 });
+    const hit = list.match(/https:\/\/cafe\.naver\.com\/[A-Za-z0-9_-]+\/\d+/);
+    if (!hit) throw new Error("no cafe URL from search");
+    console.log(`--> cafe target: ${hit[0]}`);
+    const out = await readArticle({ url: hit[0], max_chars: 800 });
+    if (!out.includes("출처: ")) throw new Error("no 출처 line");
+    return out;
+  }, { minChars: 300 });
   await step("naver_place_reviews('성수동 카페', 5)", () => naverPlaceReviews({ query: "성수동 카페", count: 5 }));
 
   console.log("=".repeat(72));

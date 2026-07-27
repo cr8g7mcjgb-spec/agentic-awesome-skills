@@ -241,6 +241,21 @@ export function parseBlogUrl(url) {
   return null;
 }
 
+export function parseCafeUrl(url) {
+  const s = String(url || "").trim();
+  const m = s.match(/cafe\.naver\.com\/(?:ca-fe\/web\/cafes\/)?([A-Za-z0-9_-]+)(?:\/articles)?\/(\d+)/);
+  return m ? { cafeId: m[1], articleId: m[2] } : null;
+}
+
+export function parseTistoryUrl(url) {
+  const s = String(url || "").trim();
+  // Tistory serves both {name}.tistory.com/123 and custom domains that keep
+  // the same /123 or /entry/{slug} shape.
+  const m = s.match(/^https?:\/\/([^/]+)\/(entry\/[^?#]+|\d+)/i);
+  if (!m) return null;
+  return { host: m[1], path: m[2] };
+}
+
 export function parseNewsUrl(url) {
   const s = String(url || "").trim();
   const m = s.match(/news\.naver\.com\/(?:mnews\/)?article\/(\d{3})\/(\d{10})/) ||
@@ -284,14 +299,7 @@ export function blogReadRoutes(blogId, logNo) {
       url: `https://r.jina.ai/https://m.blog.naver.com/${blogId}/${logNo}`,
       referer: null,
       timeoutMs: 40000,
-      parse: (md) => {
-        if (!md || md.length < 200) return null;
-        // r.jina.ai returns markdown with a "Title:" preamble.
-        const t = md.match(/^Title:\s*(.+)$/m);
-        const body = md.replace(/^(Title|URL Source|Published Time|Markdown Content):.*$/gm, "").trim();
-        if (body.length < 120) return null;
-        return { strategy: "jina-markdown", title: t ? t[1].trim() : "", date: "", text: body };
-      },
+      parse: (md) => parseJinaMarkdown(md),
     },
     {
       name: "rss",
@@ -312,6 +320,90 @@ export function blogReadRoutes(blogId, logNo) {
       },
     },
   ];
+}
+
+/** Body containers used by Tistory themes and most Korean blog platforms. */
+const ARTICLE_CONTAINERS = [
+  ["tt_article", /<div[^>]*class="[^"]*tt_article_useless_p_margin[^"]*"[^>]*>([\s\S]*)/i],
+  ["article_view", /<div[^>]*class="[^"]*article_view[^"]*"[^>]*>([\s\S]*)/i],
+  ["entry-content", /<div[^>]*class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*)/i],
+  ["article-view", /<div[^>]*id="article-view"[^>]*>([\s\S]*)/i],
+  ["contents_style", /<div[^>]*class="[^"]*contents_style[^"]*"[^>]*>([\s\S]*)/i],
+  ["article-tag", /<article[^>]*>([\s\S]*?)<\/article>/i],
+];
+
+/** Extract a post body from a generic (non-Naver-blog) article page. */
+export function extractArticleBody(html) {
+  for (const [name, re] of ARTICLE_CONTAINERS) {
+    const m = html.match(re);
+    if (!m) continue;
+    let chunk = m[1];
+    const stop = chunk.search(
+      /<div[^>]*(?:class|id)="[^"]*(?:comment|reply|footer|related|sns|share|tt_footer)/i
+    );
+    if (stop > 200) chunk = chunk.slice(0, stop);
+    const text = htmlToText(chunk);
+    if (text.length > 120) return { strategy: name, text };
+  }
+  return null;
+}
+
+/** Naver cafe public articles. Member-only boards need a login and will fail. */
+export function cafeReadRoutes(cafeId, articleId) {
+  const parse = (html) => {
+    const body = extractPostBody(html) || extractArticleBody(html);
+    if (!body) return null;
+    return { title: extractTitle(html), date: extractDate(html), ...body };
+  };
+  return [
+    {
+      name: "cafe-mobile",
+      url: `https://m.cafe.naver.com/ca-fe/web/cafes/${cafeId}/articles/${articleId}`,
+      referer: "https://m.search.naver.com/",
+      parse,
+    },
+    {
+      name: "cafe-mobile-legacy",
+      url: `https://m.cafe.naver.com/${cafeId}/${articleId}`,
+      referer: "https://m.search.naver.com/",
+      parse,
+    },
+    {
+      name: "cafe-jina",
+      url: `https://r.jina.ai/https://m.cafe.naver.com/${cafeId}/${articleId}`,
+      referer: null,
+      timeoutMs: 40000,
+      parse: (md) => parseJinaMarkdown(md),
+    },
+  ];
+}
+
+/** Tistory and other ordinary blog hosts. */
+export function tistoryReadRoutes(host, path) {
+  const parse = (html) => {
+    const body = extractArticleBody(html) || extractPostBody(html);
+    if (!body) return null;
+    return { title: extractTitle(html), date: extractDate(html), ...body };
+  };
+  return [
+    { name: "direct", url: `https://${host}/${path}`, referer: `https://${host}/`, parse },
+    {
+      name: "jina",
+      url: `https://r.jina.ai/https://${host}/${path}`,
+      referer: null,
+      timeoutMs: 40000,
+      parse: (md) => parseJinaMarkdown(md),
+    },
+  ];
+}
+
+/** r.jina.ai returns markdown behind a small "Title:/URL Source:" preamble. */
+export function parseJinaMarkdown(md) {
+  if (!md || md.length < 200) return null;
+  const t = md.match(/^Title:\s*(.+)$/m);
+  const body = md.replace(/^(Title|URL Source|Published Time|Markdown Content):.*$/gm, "").trim();
+  if (body.length < 120) return null;
+  return { strategy: "jina-markdown", title: t ? t[1].trim() : "", date: "", text: body };
 }
 
 /**

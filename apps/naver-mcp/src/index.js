@@ -65,6 +65,27 @@ const TOOLS = [
     },
   },
   {
+    name: "read_article",
+    description:
+      "URL 하나로 본문을 읽는다. 네이버 블로그/뉴스/공개 카페, 티스토리, 그 밖의 일반 블로그를 URL 모양으로 알아서 구분해 처리한다. 어떤 링크인지 확실하지 않으면 이 도구를 써라. 응답 맨 위에 항상 출처 링크가 포함된다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description:
+            "글 URL. blog.naver.com / cafe.naver.com / n.news.naver.com / *.tistory.com 등",
+        },
+        max_chars: {
+          type: "integer",
+          description: "본문 최대 글자수 (기본 8000, 0이면 무제한). 잘린 경우 응답에 명시된다.",
+          minimum: 0,
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "naver_news_search",
     description: "네이버 뉴스를 검색해 기사 목록(제목 + URL)을 돌려준다. 본문은 naver_news_read 로 읽는다.",
     inputSchema: {

@@ -14,6 +14,10 @@ import {
   httpGet,
   parseBlogUrl,
   parseNewsUrl,
+  parseCafeUrl,
+  parseTistoryUrl,
+  cafeReadRoutes,
+  tistoryReadRoutes,
   readViaChain,
   sleep,
 } from "./naver.js";
@@ -194,6 +198,72 @@ export async function naverBlogRead({ url, max_chars }) {
  * this only decides what is tried first.
  */
 export const DEFAULT_BLOG_ORDER = ["direct-mobile", "pc-postview", "jina-reader", "rss"];
+
+/* ------------------------------------------------------- 2b. any article read */
+
+/** Header shared by every read tool, so the source link is never missing. */
+function articleHeader({ title, fallback, source, date, route, strategy, extra }) {
+  return [
+    title ? `# ${title}` : `# ${fallback}`,
+    `출처: ${source}`,
+    date ? `작성일: ${date}` : null,
+    extra || null,
+    `경로: ${route} (추출: ${strategy})`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Read a post from Naver blog, a public Naver cafe, Tistory, or another
+ * ordinary blog host, picking the extractor from the URL.
+ */
+export async function readArticle({ url, max_chars }) {
+  const raw = String(url || "").trim();
+  if (!/^https?:\/\//i.test(raw)) {
+    throw new NaverError("BAD_INPUT", "A full http(s):// URL is required.", { url: raw });
+  }
+
+  // Naver blog first - it has the richest chain and its own extractor.
+  if (parseBlogUrl(raw)?.logNo) return naverBlogRead({ url: raw, max_chars });
+  if (parseNewsUrl(raw)) return naverNewsRead({ url: raw, max_chars });
+
+  const cafe = parseCafeUrl(raw);
+  if (cafe) {
+    const post = await readViaChain(cafeReadRoutes(cafe.cafeId, cafe.articleId));
+    const source = `https://cafe.naver.com/${cafe.cafeId}/${cafe.articleId}`;
+    return `${articleHeader({
+      title: post.title,
+      fallback: `${cafe.cafeId}/${cafe.articleId}`,
+      source,
+      date: post.date,
+      route: post.route,
+      strategy: post.strategy,
+      extra: `카페: ${cafe.cafeId}`,
+    })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+  }
+
+  const tistory = parseTistoryUrl(raw);
+  if (tistory) {
+    const post = await readViaChain(tistoryReadRoutes(tistory.host, tistory.path));
+    const source = `https://${tistory.host}/${tistory.path}`;
+    return `${articleHeader({
+      title: post.title,
+      fallback: tistory.host,
+      source,
+      date: post.date,
+      route: post.route,
+      strategy: post.strategy,
+      extra: `사이트: ${tistory.host}`,
+    })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+  }
+
+  throw new NaverError(
+    "BAD_INPUT",
+    "Could not tell what kind of page that is. Supported: naver blog, naver news, public naver cafe, tistory, and blog hosts using /{postId} or /entry/{slug}.",
+    { url: raw }
+  );
+}
 
 /* -------------------------------------------------------------- 3. news search */
 

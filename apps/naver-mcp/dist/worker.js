@@ -249,6 +249,21 @@ function parseBlogUrl(url) {
   return null;
 }
 
+function parseCafeUrl(url) {
+  const s = String(url || "").trim();
+  const m = s.match(/cafe\.naver\.com\/(?:ca-fe\/web\/cafes\/)?([A-Za-z0-9_-]+)(?:\/articles)?\/(\d+)/);
+  return m ? { cafeId: m[1], articleId: m[2] } : null;
+}
+
+function parseTistoryUrl(url) {
+  const s = String(url || "").trim();
+  // Tistory serves both {name}.tistory.com/123 and custom domains that keep
+  // the same /123 or /entry/{slug} shape.
+  const m = s.match(/^https?:\/\/([^/]+)\/(entry\/[^?#]+|\d+)/i);
+  if (!m) return null;
+  return { host: m[1], path: m[2] };
+}
+
 function parseNewsUrl(url) {
   const s = String(url || "").trim();
   const m = s.match(/news\.naver\.com\/(?:mnews\/)?article\/(\d{3})\/(\d{10})/) ||
@@ -292,14 +307,7 @@ function blogReadRoutes(blogId, logNo) {
       url: `https://r.jina.ai/https://m.blog.naver.com/${blogId}/${logNo}`,
       referer: null,
       timeoutMs: 40000,
-      parse: (md) => {
-        if (!md || md.length < 200) return null;
-        // r.jina.ai returns markdown with a "Title:" preamble.
-        const t = md.match(/^Title:\s*(.+)$/m);
-        const body = md.replace(/^(Title|URL Source|Published Time|Markdown Content):.*$/gm, "").trim();
-        if (body.length < 120) return null;
-        return { strategy: "jina-markdown", title: t ? t[1].trim() : "", date: "", text: body };
-      },
+      parse: (md) => parseJinaMarkdown(md),
     },
     {
       name: "rss",
@@ -320,6 +328,90 @@ function blogReadRoutes(blogId, logNo) {
       },
     },
   ];
+}
+
+/** Body containers used by Tistory themes and most Korean blog platforms. */
+const ARTICLE_CONTAINERS = [
+  ["tt_article", /<div[^>]*class="[^"]*tt_article_useless_p_margin[^"]*"[^>]*>([\s\S]*)/i],
+  ["article_view", /<div[^>]*class="[^"]*article_view[^"]*"[^>]*>([\s\S]*)/i],
+  ["entry-content", /<div[^>]*class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*)/i],
+  ["article-view", /<div[^>]*id="article-view"[^>]*>([\s\S]*)/i],
+  ["contents_style", /<div[^>]*class="[^"]*contents_style[^"]*"[^>]*>([\s\S]*)/i],
+  ["article-tag", /<article[^>]*>([\s\S]*?)<\/article>/i],
+];
+
+/** Extract a post body from a generic (non-Naver-blog) article page. */
+function extractArticleBody(html) {
+  for (const [name, re] of ARTICLE_CONTAINERS) {
+    const m = html.match(re);
+    if (!m) continue;
+    let chunk = m[1];
+    const stop = chunk.search(
+      /<div[^>]*(?:class|id)="[^"]*(?:comment|reply|footer|related|sns|share|tt_footer)/i
+    );
+    if (stop > 200) chunk = chunk.slice(0, stop);
+    const text = htmlToText(chunk);
+    if (text.length > 120) return { strategy: name, text };
+  }
+  return null;
+}
+
+/** Naver cafe public articles. Member-only boards need a login and will fail. */
+function cafeReadRoutes(cafeId, articleId) {
+  const parse = (html) => {
+    const body = extractPostBody(html) || extractArticleBody(html);
+    if (!body) return null;
+    return { title: extractTitle(html), date: extractDate(html), ...body };
+  };
+  return [
+    {
+      name: "cafe-mobile",
+      url: `https://m.cafe.naver.com/ca-fe/web/cafes/${cafeId}/articles/${articleId}`,
+      referer: "https://m.search.naver.com/",
+      parse,
+    },
+    {
+      name: "cafe-mobile-legacy",
+      url: `https://m.cafe.naver.com/${cafeId}/${articleId}`,
+      referer: "https://m.search.naver.com/",
+      parse,
+    },
+    {
+      name: "cafe-jina",
+      url: `https://r.jina.ai/https://m.cafe.naver.com/${cafeId}/${articleId}`,
+      referer: null,
+      timeoutMs: 40000,
+      parse: (md) => parseJinaMarkdown(md),
+    },
+  ];
+}
+
+/** Tistory and other ordinary blog hosts. */
+function tistoryReadRoutes(host, path) {
+  const parse = (html) => {
+    const body = extractArticleBody(html) || extractPostBody(html);
+    if (!body) return null;
+    return { title: extractTitle(html), date: extractDate(html), ...body };
+  };
+  return [
+    { name: "direct", url: `https://${host}/${path}`, referer: `https://${host}/`, parse },
+    {
+      name: "jina",
+      url: `https://r.jina.ai/https://${host}/${path}`,
+      referer: null,
+      timeoutMs: 40000,
+      parse: (md) => parseJinaMarkdown(md),
+    },
+  ];
+}
+
+/** r.jina.ai returns markdown behind a small "Title:/URL Source:" preamble. */
+function parseJinaMarkdown(md) {
+  if (!md || md.length < 200) return null;
+  const t = md.match(/^Title:\s*(.+)$/m);
+  const body = md.replace(/^(Title|URL Source|Published Time|Markdown Content):.*$/gm, "").trim();
+  if (body.length < 120) return null;
+  return { strategy: "jina-markdown", title: t ? t[1].trim() : "", date: "", text: body };
 }
 
 /**
@@ -555,6 +647,72 @@ async function naverBlogRead({ url, max_chars }) {
  * this only decides what is tried first.
  */
 const DEFAULT_BLOG_ORDER = ["direct-mobile", "pc-postview", "jina-reader", "rss"];
+
+/* ------------------------------------------------------- 2b. any article read */
+
+/** Header shared by every read tool, so the source link is never missing. */
+function articleHeader({ title, fallback, source, date, route, strategy, extra }) {
+  return [
+    title ? `# ${title}` : `# ${fallback}`,
+    `출처: ${source}`,
+    date ? `작성일: ${date}` : null,
+    extra || null,
+    `경로: ${route} (추출: ${strategy})`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Read a post from Naver blog, a public Naver cafe, Tistory, or another
+ * ordinary blog host, picking the extractor from the URL.
+ */
+async function readArticle({ url, max_chars }) {
+  const raw = String(url || "").trim();
+  if (!/^https?:\/\//i.test(raw)) {
+    throw new NaverError("BAD_INPUT", "A full http(s):// URL is required.", { url: raw });
+  }
+
+  // Naver blog first - it has the richest chain and its own extractor.
+  if (parseBlogUrl(raw)?.logNo) return naverBlogRead({ url: raw, max_chars });
+  if (parseNewsUrl(raw)) return naverNewsRead({ url: raw, max_chars });
+
+  const cafe = parseCafeUrl(raw);
+  if (cafe) {
+    const post = await readViaChain(cafeReadRoutes(cafe.cafeId, cafe.articleId));
+    const source = `https://cafe.naver.com/${cafe.cafeId}/${cafe.articleId}`;
+    return `${articleHeader({
+      title: post.title,
+      fallback: `${cafe.cafeId}/${cafe.articleId}`,
+      source,
+      date: post.date,
+      route: post.route,
+      strategy: post.strategy,
+      extra: `카페: ${cafe.cafeId}`,
+    })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+  }
+
+  const tistory = parseTistoryUrl(raw);
+  if (tistory) {
+    const post = await readViaChain(tistoryReadRoutes(tistory.host, tistory.path));
+    const source = `https://${tistory.host}/${tistory.path}`;
+    return `${articleHeader({
+      title: post.title,
+      fallback: tistory.host,
+      source,
+      date: post.date,
+      route: post.route,
+      strategy: post.strategy,
+      extra: `사이트: ${tistory.host}`,
+    })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+  }
+
+  throw new NaverError(
+    "BAD_INPUT",
+    "Could not tell what kind of page that is. Supported: naver blog, naver news, public naver cafe, tistory, and blog hosts using /{postId} or /entry/{slug}.",
+    { url: raw }
+  );
+}
 
 /* -------------------------------------------------------------- 3. news search */
 
@@ -797,6 +955,27 @@ const TOOLS = [
           type: "integer",
           description:
             "본문 최대 글자수 (기본 8000). 컨텍스트를 아끼려면 2000~3000, 전체가 필요하면 0(무제한). 잘린 경우 응답에 명시된다.",
+          minimum: 0,
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "read_article",
+    description:
+      "URL 하나로 본문을 읽는다. 네이버 블로그/뉴스/공개 카페, 티스토리, 그 밖의 일반 블로그를 URL 모양으로 알아서 구분해 처리한다. 어떤 링크인지 확실하지 않으면 이 도구를 써라. 응답 맨 위에 항상 출처 링크가 포함된다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description:
+            "글 URL. blog.naver.com / cafe.naver.com / n.news.naver.com / *.tistory.com 등",
+        },
+        max_chars: {
+          type: "integer",
+          description: "본문 최대 글자수 (기본 8000, 0이면 무제한). 잘린 경우 응답에 명시된다.",
           minimum: 0,
         },
       },
