@@ -15,7 +15,7 @@ tools: [claude, cursor, gemini]
 
 ## Overview
 
-Five production-ready generators that reproduce the poster typography styles that fill
+Seven production-ready generators that reproduce the poster typography styles that fill
 Pinterest and Behance moodboards — photoreal inflated balloon and stuffed-pillow lettering,
 melted liquid chrome, trippy grain-mapped gradients, and Illustrator-style bitmap halftone.
 No Photoshop, no Illustrator, no 3D software, no external libraries or fonts.
@@ -56,6 +56,8 @@ byte-identical.
 | Liquid chrome, melted metal, Y2K | `templates/chrome-liquid.html` | banded `feComponentTransfer` ramp + `feDisplacementMap` |
 | Trippy gradient, grain, aura blobs | `templates/grain-gradient.html` | gradient map via lookup tables + `feTurbulence` grain |
 | Bitmap halftone, dot screen, riso | `templates/halftone-bitmap.html` | canvas luminance sampling → vector dot path |
+| Blurred silkscreen glow dissolving into dots | `templates/halftone-glow.html` | blur first, *then* screen — the blur supplies the tonal ramp |
+| Isometric extruded type, motion ghosts, dashed guides | `templates/iso-extrude.html` | shear + repeated offset copies + progressive blur |
 
 Open the file in any browser. No build step, no server, no dependencies.
 
@@ -221,7 +223,38 @@ for (let v = -reach; v <= reach; v++)
 Dot size varies only if the source varies. Fill the artwork with a gradient before
 screening it — a flat black shape screens to a uniform grid of identical dots.
 
-### Step 7: Swap the content, keep the material
+### Step 7: Blur before you screen, and extrude by repetition
+
+Two more constructions cover the rest of the poster vocabulary.
+
+**Silkscreen glow** (`halftone-glow.html`) is the halftone screen applied to a *blurred*
+source rather than a crisp one. That single reordering is the whole effect: the blur
+supplies a smooth luminance ramp around every letter, and the screen turns that ramp into
+dots that grow toward the letter and scatter away from it. Screening a crisp glyph just
+gives a coarse solid shape.
+
+The one parameter relationship that matters: blur radius must stay well under the smallest
+counter, or the holes in a, e, o fill in and the words stop reading. Roughly
+`blur ≤ counter / 3`. When a reference looks over-inked, the fix is almost always lighter
+strokes, not a smaller blur — fattening the glyph and blurring it are additive.
+
+**Isometric extrusion** (`iso-extrude.html`) needs no 3D at all. Draw the same text once
+per depth unit, each copy offset one pixel further along the extrusion vector in the side
+colour, back to front, then draw the front face last:
+
+```js
+for (let i = depth; i >= 1; i--) place(text, dx * i, dy * i, sideColour);
+place(text, 0, 0, faceColour);
+```
+
+Order the transform as `rotate(tilt) skewX(skew) scale(sx, sy)` — rotation sets the angle
+the line of text runs at, the shear sets how far the letters lean, and swapping the two
+changes the result. The trailing ghosts are the same text with no extrusion, progressively
+blurred and faded, drawn *underneath*. Measuring the group with `getBBox()` on a wrapping
+`<g>` returns the bounds *after* those transforms, which is what makes fitting a rotated
+line to the page possible.
+
+### Step 8: Swap the content, keep the material
 
 This is the whole point of the split. In `halftone-bitmap.html` every shape is a list of
 path ops in a 100×100 box:
@@ -338,6 +371,9 @@ SHAPES.pineapple = [
   **Solution:** Missing `color-interpolation-filters="sRGB"`.
 - **Problem:** The chrome looks like rust.
   **Solution:** The R/G/B ramp phases are too far apart. Keep the offset under ~0.05 cycles.
+- **Problem:** A halftone-glow poster turns into one solid blob.
+  **Solution:** Too much ink before the screen. Drop 살 붙이기 to 0, remove the row overlap,
+  and only then adjust the blur.
 - **Problem:** Halftone dots are all identical.
   **Solution:** The source is a flat fill. Add a gradient, or turn on 글자 그라디언트.
 - **Problem:** Grain is invisible on a dark poster.

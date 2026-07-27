@@ -1,0 +1,390 @@
+<title>Halftone Glow — blurred type screened into a dot raster</title>
+<style>
+  :root{--ui-bg:#0e0e11;--ui-panel:#16161b;--ui-line:#2a2a32;--ui-fg:#e9e9ee;--ui-dim:#8a8a95;--ui-accent:#b6f5a8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:12px/1.5 ui-sans-serif,system-ui,"Liberation Sans",sans-serif}
+  .app{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:100vh}
+  @media (max-width:860px){.app{grid-template-columns:1fr}}
+  .panel{background:var(--ui-panel);border-right:1px solid var(--ui-line);padding:16px;
+         display:flex;flex-direction:column;gap:13px;max-height:100vh;overflow:auto}
+  .panel h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:0}
+  .panel h1 small{display:block;color:var(--ui-dim);letter-spacing:.03em;text-transform:none;font-weight:400;margin-top:4px}
+  fieldset{border:1px solid var(--ui-line);border-radius:8px;padding:10px;margin:0}
+  legend{color:var(--ui-dim);letter-spacing:.12em;text-transform:uppercase;font-size:10px;padding:0 4px}
+  label{display:grid;grid-template-columns:1fr 48px;align-items:center;gap:6px;margin:7px 0}
+  label>span{color:var(--ui-dim)}
+  label>output{color:var(--ui-accent);text-align:right;font-variant-numeric:tabular-nums}
+  input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--ui-accent);margin:0}
+  input[type=color]{width:100%;height:26px;padding:0;border:1px solid var(--ui-line);border-radius:5px;background:none}
+  textarea,select,input[type=text]{width:100%;background:#0b0b0e;color:var(--ui-fg);border:1px solid var(--ui-line);
+    border-radius:6px;padding:7px;font:inherit}
+  textarea{resize:vertical;min-height:60px;letter-spacing:.03em}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .presets{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  button{background:#202027;color:var(--ui-fg);border:1px solid var(--ui-line);border-radius:6px;padding:8px 6px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
+  button.primary{background:var(--ui-accent);color:#0c1a08;border-color:var(--ui-accent);font-weight:700}
+  .check{display:flex;align-items:center;gap:8px;margin:7px 0}
+  .check input{accent-color:var(--ui-accent)}
+  .stage{display:grid;place-items:center;padding:22px;
+         background:repeating-conic-gradient(#151519 0 25%,#101014 0 50%) 0 0/24px 24px}
+  canvas{width:min(80vh,100%);height:auto;display:block;box-shadow:0 26px 70px #000a}
+  .hint{color:var(--ui-dim);margin:2px 0 6px}
+</style>
+
+<div class="app">
+<aside class="panel">
+  <h1>Halftone Glow<small>흐린 글자를 하프톤으로 찍어낸 실크스크린. 가장자리가 점으로 흩어집니다.</small></h1>
+
+  <fieldset><legend>Preset</legend>
+    <div class="presets">
+      <button data-preset="white">WHITE NIGHT</button>
+      <button data-preset="rave">RAVE ORANGE</button>
+      <button data-preset="riso">RISO PINK</button>
+      <button data-preset="paper">INK ON PAPER</button>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>Display type</legend>
+    <textarea id="txt" spellcheck="false"></textarea>
+    <label><span>줄 채우기</span><output id="fitO"></output>
+      <input type="range" id="fit" min="0.5" max="1.15" step="0.01"></label>
+    <label><span>줄 겹침</span><output id="lapO"></output>
+      <input type="range" id="lap" min="-0.1" max="0.5" step="0.01"></label>
+    <label><span>자간</span><output id="trO"></output>
+      <input type="range" id="tr" min="-40" max="10" step="0.5"></label>
+    <label><span>살 붙이기</span><output id="fatO"></output>
+      <input type="range" id="fat" min="0" max="80" step="1"></label>
+    <label><span>기울기</span><output id="slantO"></output>
+      <input type="range" id="slant" min="-24" max="24" step="1"></label>
+    <label><span>줄마다 흔들림</span><output id="wobO"></output>
+      <input type="range" id="wob" min="0" max="14" step="0.5"></label>
+    <label><span>시드</span><output id="seedO"></output>
+      <input type="range" id="seed" min="1" max="40" step="1"></label>
+  </fieldset>
+
+  <fieldset><legend>Glow &amp; screen</legend>
+    <p class="hint">번짐이 만든 밝기 기울기를 점 크기가 받아 적습니다. 번짐이 0이면 그냥 굵은 글자가 됩니다.</p>
+    <label><span>번짐</span><output id="blurO"></output>
+      <input type="range" id="blur" min="0" max="90" step="1"></label>
+    <label><span>점 간격</span><output id="cellO"></output>
+      <input type="range" id="cell" min="4" max="30" step="1"></label>
+    <label><span>스크린 각도</span><output id="angO"></output>
+      <input type="range" id="ang" min="0" max="90" step="1"></label>
+    <label><span>점 크기</span><output id="dotO"></output>
+      <input type="range" id="dot" min="0.4" max="2" step="0.02"></label>
+    <label><span>대비</span><output id="conO"></output>
+      <input type="range" id="con" min="0.3" max="3.5" step="0.05"></label>
+    <label><span>바닥 자르기</span><output id="floorO"></output>
+      <input type="range" id="floor" min="0" max="0.5" step="0.01"></label>
+    <select id="dshape">
+      <option value="circle">원형 점</option>
+      <option value="square">사각 점</option>
+      <option value="diamond">마름모 점</option>
+    </select>
+  </fieldset>
+
+  <fieldset><legend>Colour</legend>
+    <div class="row">
+      <div><span style="color:var(--ui-dim)">배경</span><input type="color" id="bg"></div>
+      <div><span style="color:var(--ui-dim)">잉크</span><input type="color" id="ink"></div>
+    </div>
+    <label style="margin-top:8px"><span>테두리 여백</span><output id="marO"></output>
+      <input type="range" id="mar" min="0" max="90" step="2"></label>
+    <label><span>그레인</span><output id="grainO"></output>
+      <input type="range" id="grain" min="0" max="0.3" step="0.01"></label>
+  </fieldset>
+
+  <fieldset><legend>Copy blocks</legend>
+    <p class="hint">한 줄에 <code>x,y|글자;다음 줄;또 다음 줄</code> — 0~100 은 백분율</p>
+    <textarea id="notes" spellcheck="false" style="min-height:110px"></textarea>
+    <label><span>본문 크기</span><output id="nsizeO"></output>
+      <input type="range" id="nsize" min="10" max="34" step="1"></label>
+    <label class="check"><input type="checkbox" id="nital"><span>본문 기울임</span></label>
+    <input type="text" id="squig" spellcheck="false" placeholder="강조 밑줄 — x,y,길이,색" style="margin-top:6px">
+  </fieldset>
+
+  <button class="primary" id="png">PNG 내보내기</button>
+  <button id="svgdl">SVG 내보내기 (벡터 점)</button>
+</aside>
+
+<main class="stage">
+  <canvas id="cv" width="1080" height="1480"></canvas>
+</main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const W = 1080, H = 1480;
+
+const PRESETS = {
+  /* 원본: Folkwang "White Night" 실크스크린 포스터 */
+  white: {
+    txt:"White\nNight\n29—30\nNov\n2022",
+    fit:0.84, lap:0.0, tr:-10, fat:0, slant:-8, wob:5, seed:11,
+    blur:15, cell:9, ang:0, dot:1.0, con:1.25, floor:0.12, dshape:"circle",
+    bg:"#000000", ink:"#b9f2ad", mar:26, grain:0.05,
+    nsize:19, nital:true,
+    notes:"8,26|Welterbe;Zeche;Zollverein,;Quartier;Nord\n"
+        + "74,3|24 Stunden;extracurriculare;Angebote\n"
+        + "37,47|Martin—;Kremmer—;Straße 21,;Essen\n"
+        + "58,56|Nachtaktueller;Programmplan;auf dem White—;board im Foyer\n"
+        + "9,82|Folkwang;Universität;der Künste,;Fachbereich;Gestaltung",
+    squig:"58,61,140,#f0c96a"
+  },
+  rave: {
+    txt:"ALL\nNIGHT\nLONG",
+    fit:0.98, lap:0.16, tr:-18, fat:9, slant:6, wob:8, seed:23,
+    blur:30, cell:11, ang:15, dot:1.05, con:1.2, floor:0.09, dshape:"circle",
+    bg:"#120600", ink:"#ff7a1a", mar:22, grain:0.08,
+    nsize:20, nital:false,
+    notes:"66,8|WAREHOUSE 12;DOORS 23:00\n10,74|NO PHONES;NO GUESTLIST",
+    squig:""
+  },
+  riso: {
+    txt:"SOFT\nNOISE",
+    fit:0.92, lap:0.08, tr:-10, fat:6, slant:0, wob:4, seed:6,
+    blur:18, cell:8, ang:45, dot:0.98, con:1.15, floor:0.1, dshape:"diamond",
+    bg:"#fdf6ec", ink:"#ff3d7f", mar:30, grain:0.1,
+    nsize:18, nital:true,
+    notes:"62,12|RISOGRAPH;2 COLOUR;A2\n12,80|EDITION OF 60;SIGNED",
+    squig:""
+  },
+  paper: {
+    txt:"TYPE\nAND\nGRAIN",
+    fit:0.9, lap:0.06, tr:-8, fat:5, slant:-4, wob:3, seed:31,
+    blur:16, cell:7, ang:30, dot:1.0, con:1.25, floor:0.12, dshape:"square",
+    bg:"#e8e3d7", ink:"#141414", mar:34, grain:0.12,
+    nsize:17, nital:false,
+    notes:"64,10|LETTERPRESS;WORKSHOP;03—07 JUNE\n12,82|STUDIO NORD",
+    squig:""
+  }
+};
+
+const CTRL = {
+  txt:"value", fit:"n", lap:"n", tr:"n", fat:"n", slant:"n", wob:"n", seed:"n",
+  blur:"n", cell:"n", ang:"n", dot:"n", con:"n", floor:"n", dshape:"value",
+  bg:"value", ink:"value", mar:"n", grain:"n",
+  notes:"value", nsize:"n", nital:"checked", squig:"value"
+};
+
+const read = () => Object.fromEntries(Object.entries(CTRL).map(([k, kind]) => {
+  const el = $(k);
+  return [k, kind === "n" ? parseFloat(el.value) : kind === "checked" ? el.checked : el.value];
+}));
+
+function applyPreset(p){
+  for (const [k, kind] of Object.entries(CTRL)){
+    if (!(k in p)) continue;
+    if (kind === "checked") $(k).checked = p[k]; else $(k).value = p[k];
+  }
+  render();
+}
+
+const rng = s => { let x = s*9301 + 49297; return () => (x = (x*9301 + 49297) % 233280) / 233280; };
+const DISPLAY = "'Archivo Black','Arial Black',Impact,'Helvetica Now Display','Liberation Sans',sans-serif";
+
+/* 원본(그레이스케일)을 그리는 오프스크린 — 흰 글자, 검은 배경, 그리고 번짐 */
+const src = document.createElement("canvas");
+src.width = W; src.height = H;
+const sctx = src.getContext("2d", { willReadFrequently: true });
+
+function drawSource(s){
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.fillStyle = "#000";
+  sctx.fillRect(0, 0, W, H);
+
+  const lines = s.txt.split("\n").filter(l => l.trim().length);
+  if (!lines.length) return sctx.getImageData(0, 0, W, H).data;
+
+  const rand = rng(s.seed);
+  const inner = W * s.fit - s.fat * 2;
+
+  // 줄마다 폭을 꽉 채운다 → 레퍼런스처럼 판면이 글자로 가득 찬다
+  const sizes = lines.map(line => {
+    sctx.font = `900 200px ${DISPLAY}`;
+    const w = sctx.measureText(line).width + s.tr * (line.length - 1);
+    return w > 0 ? 200 * inner / w : 200;
+  });
+
+  const rowH = sizes.map(v => v * 0.78);
+  const stack = rowH.reduce((a, v, i) => a + v * (i ? (1 - s.lap) : 1), 0);
+  const fit = Math.min(1, (H - s.fat*2 - s.mar*2) / stack);
+
+  let y = (H - stack * fit) / 2;
+  // 번짐이 잘리지 않도록 여백을 넉넉히 두고 그린다
+  sctx.filter = s.blur > 0 ? `blur(${s.blur}px)` : "none";
+  sctx.fillStyle = "#fff";
+  sctx.strokeStyle = "#fff";
+  sctx.lineJoin = "round";
+  sctx.lineCap = "round";
+  sctx.textAlign = "center";
+  sctx.textBaseline = "middle";
+
+  lines.forEach((line, i) => {
+    const size = sizes[i] * fit;
+    const h = rowH[i] * fit;
+    const cy = y + h * 0.5;
+    sctx.save();
+    sctx.translate(W/2 + (rand() - 0.5) * s.wob * 4, cy + (rand() - 0.5) * s.wob);
+    // 전단으로 기울인다 — 이 계열 포스터 특유의 흐르는 글줄
+    sctx.transform(1, 0, Math.tan(-s.slant * Math.PI/180), 1, 0, 0);
+    sctx.font = `900 ${size}px ${DISPLAY}`;
+    sctx.letterSpacing = `${s.tr * size / 200}px`;
+    if (s.fat > 0){ sctx.lineWidth = s.fat * size / 300; sctx.strokeText(line, 0, 0); }
+    sctx.fillText(line, 0, 0);
+    sctx.restore();
+    y += h * (i < lines.length - 1 ? (1 - s.lap) : 1);
+  });
+
+  sctx.filter = "none";
+  return sctx.getImageData(0, 0, W, H).data;
+}
+
+/* 회전 격자를 훑으며 밝기 → 점 반지름. 하프톤의 전부. */
+function screen(px, s, emit){
+  const cell = s.cell;
+  const a = s.ang * Math.PI / 180;
+  const cos = Math.cos(a), sin = Math.sin(a);
+  const reach = Math.ceil(Math.hypot(W, H) / 2 / cell) + 2;
+  const cx = W/2, cy = H/2;
+
+  for (let v = -reach; v <= reach; v++){
+    for (let u = -reach; u <= reach; u++){
+      const x = cx + (u*cos - v*sin) * cell;
+      const y = cy + (u*sin + v*cos) * cell;
+      const ix = Math.round(x), iy = Math.round(y);
+      if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue;
+
+      const o = (iy*W + ix) * 4;
+      let t = (px[o]*0.299 + px[o+1]*0.587 + px[o+2]*0.114) / 255;
+      t = (t - s.floor) / (1 - s.floor);
+      t = Math.min(1, Math.max(0, t * s.con));
+      if (t < 0.015) continue;
+
+      const r = Math.sqrt(t) * cell * 0.72 * s.dot;
+      if (r < 0.3) continue;
+      emit(x, y, r);
+    }
+  }
+}
+
+const cv = $("cv"), ctx = cv.getContext("2d");
+
+function drawNotes(s){
+  ctx.save();
+  ctx.fillStyle = s.ink;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const style = s.nital ? "italic 800" : "800";
+  ctx.font = `${style} ${s.nsize}px ui-sans-serif,system-ui,'Liberation Sans',sans-serif`;
+  for (const raw of s.notes.split("\n")){
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(/^\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\|(.*)$/);
+    if (!m) continue;
+    const x = parseFloat(m[1]) / 100 * W, y = parseFloat(m[2]) / 100 * H;
+    m[3].split(";").forEach((seg, i) =>
+      ctx.fillText(seg.trim(), x, y + i * s.nsize * 1.24));
+  }
+  // 손으로 그은 듯한 강조 밑줄
+  const sq = s.squig.split(",");
+  if (sq.length === 4){
+    const [x, y, len, col] = [parseFloat(sq[0])/100*W, parseFloat(sq[1])/100*H, parseFloat(sq[2]), sq[3].trim()];
+    ctx.strokeStyle = col; ctx.lineWidth = 5; ctx.lineCap = "round";
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++){
+      const t = i/24;
+      const px = x + t*len, py = y + Math.sin(t*Math.PI) * -9;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function render(){
+  const s = read();
+  for (const k of Object.keys(CTRL))
+    if (CTRL[k] === "n" && $(k + "O")) $(k + "O").value = s[k];
+
+  const px = drawSource(s);
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = s.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = s.ink;
+  ctx.beginPath();
+  screen(px, s, (x, y, r) => {
+    if (s.dshape === "circle"){
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, Math.PI*2);
+    } else if (s.dshape === "square"){
+      ctx.rect(x - r*0.85, y - r*0.85, r*1.7, r*1.7);
+    } else {
+      ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y); ctx.closePath();
+    }
+  });
+  ctx.fill();
+
+  // 판면 가장자리를 덮는 여백 — 실크스크린 포스터의 흰 테두리
+  if (s.mar > 0){
+    ctx.fillStyle = s.bg;
+    ctx.fillRect(0, 0, W, s.mar);
+    ctx.fillRect(0, H - s.mar, W, s.mar);
+    ctx.fillRect(0, 0, s.mar, H);
+    ctx.fillRect(W - s.mar, 0, s.mar, H);
+  }
+
+  drawNotes(s);
+
+  if (s.grain > 0){
+    const img = ctx.getImageData(0, 0, W, H), d = img.data;
+    for (let i = 0, p = 0; i < W*H; i++, p += 4){
+      const n = (Math.sin(i * 12.9898) * 43758.5453 % 1 - 0.5) * s.grain * 255;
+      d[p] += n; d[p+1] += n; d[p+2] += n;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+}
+
+/* 벡터 내보내기 — 화면은 캔버스로 빠르게, 출력은 점 하나하나를 패스로 */
+function toSVG(){
+  const s = read();
+  const px = drawSource(s);
+  const parts = [];
+  screen(px, s, (x, y, r) => {
+    const X = x.toFixed(1), Y = y.toFixed(1), R = r.toFixed(2);
+    if (s.dshape === "circle")
+      parts.push(`M${(x-r).toFixed(1)} ${Y}a${R} ${R} 0 1 0 ${(r*2).toFixed(2)} 0a${R} ${R} 0 1 0 ${(-r*2).toFixed(2)} 0`);
+    else if (s.dshape === "square")
+      parts.push(`M${(x-r*0.85).toFixed(1)} ${(y-r*0.85).toFixed(1)}h${(r*1.7).toFixed(2)}v${(r*1.7).toFixed(2)}h-${(r*1.7).toFixed(2)}z`);
+    else
+      parts.push(`M${X} ${(y-r).toFixed(1)}L${(x+r).toFixed(1)} ${Y}L${X} ${(y+r).toFixed(1)}L${(x-r).toFixed(1)} ${Y}z`);
+  });
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="${s.bg}"/>
+<path d="${parts.join("")}" fill="${s.ink}"/>
+</svg>`;
+}
+
+function download(href, name){ const a = document.createElement("a"); a.href = href; a.download = name; a.click(); }
+$("png").onclick = () => {
+  const c = document.createElement("canvas");
+  c.width = W*2; c.height = H*2;
+  const c2 = c.getContext("2d");
+  c2.imageSmoothingQuality = "high";
+  c2.drawImage(cv, 0, 0, c.width, c.height);
+  download(c.toDataURL("image/png"), "halftone-glow.png");
+};
+$("svgdl").onclick = () =>
+  download("data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(toSVG()))), "halftone-glow.svg");
+
+document.querySelectorAll(".presets button").forEach(b =>
+  b.onclick = () => applyPreset(PRESETS[b.dataset.preset]));
+for (const key of Object.keys(CTRL)) $(key).addEventListener("input", render);
+applyPreset(PRESETS.white);
+</script>
