@@ -776,30 +776,49 @@ async function naverBlogSearch({ query, count = 10, sort = "sim" }) {
     throw new NaverError("BAD_INPUT", "query is required");
   }
   const want = clampCount(count);
-  // Naver's date sort needs the area term too. Without "a:all" it widens the
-  // match instead of just reordering, and unrelated recent posts come back.
-  const sortParam = sort === "date" ? "&nso=so%3Add%2Cp%3Aall%2Ca%3Aall" : "";
+  const byDate = sort === "date";
+  const sortParam = byDate ? "&nso=so%3Add%2Cp%3Aall%2Ca%3Aall" : "";
   const src = urlSource(BLOG_PATTERN, pairKey);
   const seen = new Map();
 
-  for (let start = 1; seen.size < want && start <= 91; start += PAGE_SIZE) {
+  // Date sort widens the match rather than just reordering it: asking for
+  // "10평 카페 인테리어" by date returned recent posts about air conditioners
+  // and wedding halls. Naver's own parameters do not tighten it, so the
+  // filtering happens here - keep only titles that carry a query word, and
+  // page further to make up for what gets dropped.
+  const keywords = byDate ? query.split(/\s+/).filter((t) => t.length >= 2) : [];
+  const onTopic = (title) => !byDate || (title && keywords.some((k) => title.includes(k)));
+
+  const overFetch = byDate ? want * 4 : want;
+
+  for (let start = 1; start <= 91; start += PAGE_SIZE) {
     const url =
       `https://m.search.naver.com/search.naver?ssc=tab.m_blog.all&sm=mtb_jum` +
       `&query=${encodeURIComponent(query)}&start=${start}${sortParam}`;
     const html = await httpGet(url, { referer: SEARCH_REFERER });
 
     const before = seen.size;
-    collectHits(html, src, seen, want);
+    collectHits(html, src, seen, overFetch);
     if (seen.size === before) break; // page added nothing new
-    if (seen.size < want) await sleep(600); // be polite between pages
+
+    const kept = [...seen.values()].filter((v) => onTopic(v.title)).length;
+    if (kept >= want) break;
+    await sleep(600); // be polite between pages
   }
 
-  const items = [...seen.entries()].slice(0, want).map(([key, v]) => ({
-    url: `https://m.blog.naver.com/${key}`,
-    title: v.title,
-  }));
+  const items = [...seen.entries()]
+    .filter(([, v]) => onTopic(v.title))
+    .slice(0, want)
+    .map(([key, v]) => ({ url: `https://m.blog.naver.com/${key}`, title: v.title }));
+
   if (!items.length) {
-    throw new NaverError("PARSE_FAILED", "Search page loaded but no blog posts were found in it.", { query });
+    throw new NaverError(
+      "PARSE_FAILED",
+      byDate
+        ? `최신순 결과에 "${query}" 와 관련된 글이 없습니다. 정확도순(sort 생략)으로 다시 시도하세요.`
+        : "Search page loaded but no blog posts were found in it.",
+      { query, sort }
+    );
   }
 
   const lines = items.map(

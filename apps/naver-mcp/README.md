@@ -63,6 +63,34 @@ Code sandbox, can reach Naver):
   deployed endpoint over JSON-RPC exactly like a Claude connector does
   (`initialize` → `tools/list` → `tools/call`) and asserts real body text comes back.
 
+## File formats: what was measured
+
+Most Korean reference material — past exam papers, government reports — is
+distributed as PDF, HWP, or scans, which the HTML reader cannot touch. These
+numbers come from building and running the libraries, not from estimating:
+
+| Format | Verdict | Basis |
+| --- | --- | --- |
+| PDF (text layer) | Works | `unpdf` extracted `"2026 SUNEUNG KOREAN"` from a hand-built PDF |
+| HWPX | Expected to work | ZIP + XML; `fflate` unzips it |
+| HWP (legacy binary) | Hard | Proprietary compound-binary format, no small JS reader |
+| Scanned PDF / images | No text to extract | Pass the image to the model instead — MCP supports image content blocks, and a model that can see the page reads tables and layout that OCR would flatten |
+
+**Bundle cost**, measured with `esbuild --minify` over `unpdf` + `fflate`:
+
+```
+raw    1,618,632 bytes
+gzip     503,073 bytes     limit: 3 MB (Workers free)
+```
+
+It fits the Worker limit with room to spare, but it is ~30× the current
+57 KB bundle, which puts it far beyond what the dashboard's code editor can
+take on a phone. **Adding format support means deploying from Git rather than
+by pasting.**
+
+OCR was ruled out rather than attempted: Korean language data alone runs to
+tens of megabytes, well past the Worker limit.
+
 ## Deploying
 
 Set two repository secrets, then run the deploy workflow:
