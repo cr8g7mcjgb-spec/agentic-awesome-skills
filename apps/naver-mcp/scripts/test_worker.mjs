@@ -38,6 +38,16 @@ async function serveFixtures() {
     "/glyphs.pdf": [makeCidPdf(KOREAN_PASSAGE), "application/pdf"],
     "/notable.pdf": [makeCidPdf(KOREAN_PASSAGE, { withTable: false }), "application/pdf"],
     "/inherited.pdf": [makeCidPdf(KOREAN_PASSAGE, { inheritResources: true }), "application/pdf"],
+    "/notice": [Buffer.from(
+      "<!doctype html><html><head><title>2026학년도 수능 시행 공고</title></head><body>" +
+      "<div id='content'><p>" +
+      "한국교육과정평가원은 다음과 같이 시행 계획을 공고합니다. ".repeat(8) +
+      "</p></div><ul>" +
+      "<li><a href='/boardDownload.es?bid=0001&list_no=123&seq=1'>국어영역 문제지</a></li>" +
+      "<li><a href='/upload/answer.pdf'>정답표</a></li>" +
+      "<li><a href='/board/list.do?menu=3'>목록으로</a></li>" +
+      "</ul></body></html>"
+    ), "text/html; charset=utf-8"],
     "/page": [Buffer.from(
       "<!doctype html><html><head><title>공고문</title></head><body><article>" +
       "<p>이 페이지는 첨부파일이 아니라 웹 문서입니다. 파일 도구에 넣어도 본문이 나와야 합니다. " +
@@ -277,6 +287,22 @@ const run = async () => {
     check("a web page handed to the file tool is still read",
       !page.isError && pageText.includes("첨부파일이 아니라 웹 문서"),
       pageText.slice(0, 45).replace(/\n/g, " "));
+
+    // Korean public bodies publish the document as an attachment on a notice
+    // page, not at a searchable address. A reader that returns only prose
+    // ends the trail exactly where the useful part starts.
+    const notice = await rpc("tools/call", {
+      name: "read_article",
+      arguments: { url: `${base}/notice` },
+    });
+    const noticeText = notice.body?.result?.content?.[0]?.text || "";
+    check("a notice page hands back its attachment links",
+      !notice.body?.result?.isError &&
+        noticeText.includes("boardDownload.es") &&
+        noticeText.includes("/upload/answer.pdf"),
+      noticeText.split("첨부파일").pop()?.slice(0, 60).replace(/\n/g, " ") || "");
+    check("navigation links are not offered as attachments",
+      !noticeText.includes("list.do"));
 
     const missing = await readFile(`${base}/gone.pdf`);
     check("a missing file is NOT_FOUND, not a parse failure",

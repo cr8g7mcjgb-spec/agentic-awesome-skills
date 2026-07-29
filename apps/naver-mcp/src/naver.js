@@ -475,6 +475,48 @@ const CLIENT_RENDERED = [
 const SHELL_MARKERS = [/지도 검색/, /서제스트/, /본문 바로가기/, /메뉴 바로가기/];
 
 /** Read any URL: fetch it directly, then let the reader proxy try. */
+/**
+ * Collect the attachment links on a page.
+ *
+ * Korean public bodies rarely publish a PDF at a searchable address. The
+ * search result is a notice page, and the document itself hangs off it as an
+ * attachment - very often behind a link with no extension at all, like
+ * `?fileSn=0&fileId=1234`. A reader that returns only prose therefore ends the
+ * trail exactly where the useful part starts, so the links come back too.
+ */
+export function extractAttachments(html, pageUrl) {
+  const out = [];
+  const seen = new Set();
+
+  // Korean government sites each invent their own download endpoint -
+  // boardDownload.es, cmm/fms/FileDown.do, fileDownload.do, streamdocs - so
+  // matching a fixed list of them misses most. Any link that says "down",
+  // "attach" or "file" is a candidate; read_file settles what it really is,
+  // and an extra candidate costs far less than a missed exam paper.
+  const looksLikeFile =
+    /\.(?:pdf|hwpx?|docx?|xlsx?|pptx?|zip)(?:$|[?#])|down(?:load)?|attach|atchfile|\bfms\b|streamdocs|getfile|filesn|fileid/i;
+
+  for (const m of html.matchAll(/<a\b[^>]*\bhref=["']([^"'>]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi)) {
+    const href = decodeAllEntities(m[1]).trim();
+    if (!href || /^(?:#|javascript:|mailto:)/i.test(href)) continue;
+    if (!looksLikeFile.test(href)) continue;
+
+    let abs;
+    try {
+      abs = new URL(href, pageUrl).href;
+    } catch {
+      continue;
+    }
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+
+    const label = htmlToText(m[2]).replace(/\s+/g, " ").trim();
+    out.push({ url: abs, label: label.slice(0, 80) });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
 export function genericReadRoutes(url) {
   const known = CLIENT_RENDERED.find((s) => s.match.test(url));
   if (known) {
@@ -483,7 +525,12 @@ export function genericReadRoutes(url) {
   const parse = (html) => {
     const body = extractGenericBody(html);
     if (!body) return null;
-    return { title: extractTitle(html), date: extractDate(html), ...body };
+    return {
+      title: extractTitle(html),
+      date: extractDate(html),
+      attachments: extractAttachments(html, url),
+      ...body,
+    };
   };
   let origin = "";
   try {

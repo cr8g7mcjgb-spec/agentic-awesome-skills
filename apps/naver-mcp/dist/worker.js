@@ -358,6 +358,28 @@ var CLIENT_RENDERED = [
   }
 ];
 var SHELL_MARKERS = [/지도 검색/, /서제스트/, /본문 바로가기/, /메뉴 바로가기/];
+function extractAttachments(html, pageUrl) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const looksLikeFile = /\.(?:pdf|hwpx?|docx?|xlsx?|pptx?|zip)(?:$|[?#])|down(?:load)?|attach|atchfile|\bfms\b|streamdocs|getfile|filesn|fileid/i;
+  for (const m of html.matchAll(/<a\b[^>]*\bhref=["']([^"'>]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi)) {
+    const href = decodeAllEntities(m[1]).trim();
+    if (!href || /^(?:#|javascript:|mailto:)/i.test(href)) continue;
+    if (!looksLikeFile.test(href)) continue;
+    let abs;
+    try {
+      abs = new URL(href, pageUrl).href;
+    } catch {
+      continue;
+    }
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    const label = htmlToText(m[2]).replace(/\s+/g, " ").trim();
+    out.push({ url: abs, label: label.slice(0, 80) });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
 function genericReadRoutes(url) {
   const known = CLIENT_RENDERED.find((s) => s.match.test(url));
   if (known) {
@@ -366,7 +388,12 @@ function genericReadRoutes(url) {
   const parse = (html) => {
     const body = extractGenericBody(html);
     if (!body) return null;
-    return { title: extractTitle(html), date: extractDate(html), ...body };
+    return {
+      title: extractTitle(html),
+      date: extractDate(html),
+      attachments: extractAttachments(html, url),
+      ...body
+    };
   };
   let origin = "";
   try {
@@ -1446,6 +1473,7 @@ ${capLength(post2.text, max_chars).text}`;
     host = new URL(raw).hostname;
   } catch {
   }
+  const files = (post.attachments || []).length ? "\n\n---\n\n\uCCA8\uBD80\uD30C\uC77C (read_file \uB85C \uC5F4 \uC218 \uC788\uC2B5\uB2C8\uB2E4):\n" + post.attachments.map((a) => `- ${a.label || "\uD30C\uC77C"}: ${a.url}`).join("\n") : "";
   return `${articleHeader({
     title: post.title,
     fallback: host,
@@ -1458,7 +1486,7 @@ ${capLength(post2.text, max_chars).text}`;
 
 ---
 
-${capLength(post.text, max_chars).text}`;
+${capLength(post.text, max_chars).text}${files}`;
 }
 async function readFileUrl({ url, max_chars, _fromArticle = false }) {
   const raw = String(url || "").trim();
@@ -1813,7 +1841,7 @@ var TOOLS = [
   },
   {
     name: "read_article",
-    description: "URL \uD558\uB098\uB85C \uBCF8\uBB38\uC744 \uC77D\uB294\uB2E4. \uB124\uC774\uBC84 \uBE14\uB85C\uADF8/\uB274\uC2A4/\uACF5\uAC1C \uCE74\uD398, \uD2F0\uC2A4\uD1A0\uB9AC\uB294 \uC804\uC6A9 \uCD94\uCD9C\uAE30\uB85C, \uADF8 \uBC16\uC758 \uBAA8\uB4E0 \uC0AC\uC774\uD2B8(\uC815\uBD80\xB7\uACF5\uACF5\uAE30\uAD00, \uC5F0\uAD6C\uC18C, \uC5B8\uB860\uC0AC \uB4F1)\uB294 \uBC94\uC6A9 \uCD94\uCD9C\uAE30\uB85C \uCC98\uB9AC\uD55C\uB2E4. \uAC80\uC0C9 \uACB0\uACFC\uC5D0\uC11C \uC5BB\uC740 \uB9C1\uD06C\uB294 \uC885\uB958\uB97C \uAC00\uB9AC\uC9C0 \uB9D0\uACE0 \uC774 \uB3C4\uAD6C\uC5D0 \uB123\uC5B4\uB77C. \uC751\uB2F5 \uB9E8 \uC704\uC5D0 \uD56D\uC0C1 \uCD9C\uCC98 \uB9C1\uD06C\uAC00 \uD3EC\uD568\uB41C\uB2E4.",
+    description: "URL \uD558\uB098\uB85C \uBCF8\uBB38\uC744 \uC77D\uB294\uB2E4. \uB124\uC774\uBC84 \uBE14\uB85C\uADF8/\uB274\uC2A4/\uACF5\uAC1C \uCE74\uD398, \uD2F0\uC2A4\uD1A0\uB9AC\uB294 \uC804\uC6A9 \uCD94\uCD9C\uAE30\uB85C, \uADF8 \uBC16\uC758 \uBAA8\uB4E0 \uC0AC\uC774\uD2B8(\uC815\uBD80\xB7\uACF5\uACF5\uAE30\uAD00, \uC5F0\uAD6C\uC18C, \uC5B8\uB860\uC0AC \uB4F1)\uB294 \uBC94\uC6A9 \uCD94\uCD9C\uAE30\uB85C \uCC98\uB9AC\uD55C\uB2E4. \uAC80\uC0C9 \uACB0\uACFC\uC5D0\uC11C \uC5BB\uC740 \uB9C1\uD06C\uB294 \uC885\uB958\uB97C \uAC00\uB9AC\uC9C0 \uB9D0\uACE0 \uC774 \uB3C4\uAD6C\uC5D0 \uB123\uC5B4\uB77C. \uC751\uB2F5 \uB9E8 \uC704\uC5D0 \uD56D\uC0C1 \uCD9C\uCC98 \uB9C1\uD06C\uAC00 \uD3EC\uD568\uB418\uACE0, \uD398\uC774\uC9C0\uC5D0 \uCCA8\uBD80\uD30C\uC77C\uC774 \uC788\uC73C\uBA74 \uADF8 \uC8FC\uC18C\uB3C4 \uD568\uAED8 \uB3CC\uB824\uC900\uB2E4 - \uADF8 \uC8FC\uC18C\uB97C read_file \uC5D0 \uB123\uC73C\uBA74 PDF/HWPX \uBCF8\uBB38\uC744 \uC77D\uC744 \uC218 \uC788\uB2E4.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1988,7 +2016,7 @@ async function handleRpc(msg) {
         protocolVersion: version,
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: "\uB124\uC774\uBC84\uC5D0\uC11C \uD55C\uAD6D\uC5B4 \uC790\uB8CC\uB97C \uCC3E\uC544 \uBCF8\uBB38\uAE4C\uC9C0 \uC77D\uB294 \uC11C\uBC84\uC785\uB2C8\uB2E4.\n\n\uC4F0\uB294 \uC21C\uC11C: \u2460 \uAC80\uC0C9 \uB3C4\uAD6C\uB85C URL\uC744 \uCC3E\uACE0 \u2461 read_article \uB85C \uBCF8\uBB38\uC744 \uC77D\uB294\uB2E4.\n- \uBE14\uB85C\uADF8/\uD6C4\uAE30/\uB9DB\uC9D1 \u2192 naver_blog_search\n- \uB274\uC2A4 \u2192 naver_news_search\n- \uC815\uBD80\xB7\uACF5\uACF5\uAE30\uAD00(\uD55C\uAD6D\uC18C\uBE44\uC790\uC6D0 \uB4F1), \uC5F0\uAD6C\uC18C, \uD559\uC220\xB7\uC804\uBB38 \uC790\uB8CC \u2192 naver_web_search\n- \uCE74\uD398 \uACF5\uAC1C\uAE00 \u2192 naver_cafe_search\n\nread_article \uC740 \uC0AC\uC774\uD2B8 \uC885\uB958\uB97C \uAC00\uB9AC\uC9C0 \uC54A\uB294\uB2E4. \uAC80\uC0C9\uC73C\uB85C \uC5BB\uC740 \uB9C1\uD06C\uB294 \uB124\uC774\uBC84\uB4E0 \uD2F0\uC2A4\uD1A0\uB9AC\uB4E0 \uC815\uBD80 \uC0AC\uC774\uD2B8\uB4E0 \uADF8\uB300\uB85C \uB123\uC73C\uBA74 \uB41C\uB2E4.\nPDF\xB7HWPX\xB7\uC774\uBBF8\uC9C0 \uCCA8\uBD80\uD30C\uC77C\uC740 read_file \uB85C \uC77D\uB294\uB2E4. \uAE30\uCD9C\uBB38\uC81C\xB7\uBCF4\uACE0\uC11C\xB7\uACF5\uACE0\uBB38\uCC98\uB7FC \uBCF8\uBB38\uC774 \uCCA8\uBD80\uD30C\uC77C\uC5D0 \uB4E4\uC5B4 \uC788\uB294 \uC790\uB8CC\uB294 \uB9C1\uD06C\uB97C \uADF8\uB300\uB85C read_file \uC5D0 \uB123\uC5B4\uB77C. \uC774\uBBF8\uC9C0\uB294 \uD14D\uC2A4\uD2B8\uAC00 \uC544\uB2C8\uB77C \uADF8\uB9BC\uC73C\uB85C \uB3CC\uC544\uC624\uBBC0\uB85C \uC9C1\uC811 \uBCF4\uACE0 \uBD84\uC11D\uD558\uBA74 \uB41C\uB2E4.\n\uBAA8\uB4E0 \uBCF8\uBB38 \uC751\uB2F5\uC5D0\uB294 \uCD9C\uCC98 \uB9C1\uD06C\uAC00 \uD3EC\uD568\uB418\uBBC0\uB85C, \uC0AC\uC6A9\uC790\uC5D0\uAC8C \uB2F5\uD560 \uB54C \uADF8 \uB9C1\uD06C\uB97C \uD568\uAED8 \uC81C\uC2DC\uD558\uB77C."
+        instructions: "\uB124\uC774\uBC84\uC5D0\uC11C \uD55C\uAD6D\uC5B4 \uC790\uB8CC\uB97C \uCC3E\uC544 \uBCF8\uBB38\uAE4C\uC9C0 \uC77D\uB294 \uC11C\uBC84\uC785\uB2C8\uB2E4.\n\n\uC4F0\uB294 \uC21C\uC11C: \u2460 \uAC80\uC0C9 \uB3C4\uAD6C\uB85C URL\uC744 \uCC3E\uACE0 \u2461 read_article \uB85C \uBCF8\uBB38\uC744 \uC77D\uB294\uB2E4.\n- \uBE14\uB85C\uADF8/\uD6C4\uAE30/\uB9DB\uC9D1 \u2192 naver_blog_search\n- \uB274\uC2A4 \u2192 naver_news_search\n- \uC815\uBD80\xB7\uACF5\uACF5\uAE30\uAD00(\uD55C\uAD6D\uC18C\uBE44\uC790\uC6D0 \uB4F1), \uC5F0\uAD6C\uC18C, \uD559\uC220\xB7\uC804\uBB38 \uC790\uB8CC \u2192 naver_web_search\n- \uCE74\uD398 \uACF5\uAC1C\uAE00 \u2192 naver_cafe_search\n\nread_article \uC740 \uC0AC\uC774\uD2B8 \uC885\uB958\uB97C \uAC00\uB9AC\uC9C0 \uC54A\uB294\uB2E4. \uAC80\uC0C9\uC73C\uB85C \uC5BB\uC740 \uB9C1\uD06C\uB294 \uB124\uC774\uBC84\uB4E0 \uD2F0\uC2A4\uD1A0\uB9AC\uB4E0 \uC815\uBD80 \uC0AC\uC774\uD2B8\uB4E0 \uADF8\uB300\uB85C \uB123\uC73C\uBA74 \uB41C\uB2E4.\nPDF\xB7HWPX\xB7\uC774\uBBF8\uC9C0 \uCCA8\uBD80\uD30C\uC77C\uC740 read_file \uB85C \uC77D\uB294\uB2E4. \uAE30\uCD9C\uBB38\uC81C\xB7\uBCF4\uACE0\uC11C\xB7\uACF5\uACE0\uBB38\uCC98\uB7FC \uBCF8\uBB38\uC774 \uCCA8\uBD80\uD30C\uC77C\uC5D0 \uB4E4\uC5B4 \uC788\uB294 \uC790\uB8CC\uB294 \uB9C1\uD06C\uB97C \uADF8\uB300\uB85C read_file \uC5D0 \uB123\uC5B4\uB77C. \uACF5\uACF5\uAE30\uAD00 \uC790\uB8CC\uB294 \uAC80\uC0C9 \u2192 read_article \uB85C \uACF5\uACE0 \uD398\uC774\uC9C0\uB97C \uC5F4\uACE0 \u2192 \uAC70\uAE30 \uB538\uB824 \uB098\uC624\uB294 \uCCA8\uBD80\uD30C\uC77C \uC8FC\uC18C\uB97C read_file \uC5D0 \uB123\uB294 \uC21C\uC11C\uB85C \uC811\uADFC\uD558\uB77C. \uC774\uBBF8\uC9C0\uB294 \uD14D\uC2A4\uD2B8\uAC00 \uC544\uB2C8\uB77C \uADF8\uB9BC\uC73C\uB85C \uB3CC\uC544\uC624\uBBC0\uB85C \uC9C1\uC811 \uBCF4\uACE0 \uBD84\uC11D\uD558\uBA74 \uB41C\uB2E4.\n\uBAA8\uB4E0 \uBCF8\uBB38 \uC751\uB2F5\uC5D0\uB294 \uCD9C\uCC98 \uB9C1\uD06C\uAC00 \uD3EC\uD568\uB418\uBBC0\uB85C, \uC0AC\uC6A9\uC790\uC5D0\uAC8C \uB2F5\uD560 \uB54C \uADF8 \uB9C1\uD06C\uB97C \uD568\uAED8 \uC81C\uC2DC\uD558\uB77C."
       });
     }
     case "tools/list":

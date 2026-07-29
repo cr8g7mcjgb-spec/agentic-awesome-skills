@@ -313,6 +313,13 @@ export async function readArticle({ url, max_chars }) {
   } catch {
     /* keep the raw string */
   }
+  // The attachments are usually the reason the page was opened at all, so
+  // they are listed with the body rather than left for a second guess.
+  const files = (post.attachments || []).length
+    ? "\n\n---\n\n첨부파일 (read_file 로 열 수 있습니다):\n" +
+      post.attachments.map((a) => `- ${a.label || "파일"}: ${a.url}`).join("\n")
+    : "";
+
   return `${articleHeader({
     title: post.title,
     fallback: host,
@@ -321,7 +328,7 @@ export async function readArticle({ url, max_chars }) {
     route: post.route,
     strategy: post.strategy,
     extra: `사이트: ${host}`,
-  })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+  })}\n\n---\n\n${capLength(post.text, max_chars).text}${files}`;
 }
 
 /* ----------------------------------------------------------- 2d. file read */
