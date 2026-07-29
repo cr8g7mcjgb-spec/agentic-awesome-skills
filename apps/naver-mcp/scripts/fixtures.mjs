@@ -78,6 +78,76 @@ export function makeHwpx(paragraphs = ["2026학년도 수능 국어 영역", "�
   });
 }
 
+/**
+ * A PDF shaped the way Korean documents actually are: a subset font, text
+ * stored as glyph ids rather than characters, and a /ToUnicode CMap that says
+ * what each id stands for. Without reading that CMap the bytes are unreadable,
+ * which is exactly the case that used to be handed to an outside service.
+ */
+export function makeCidPdf(text = "다음 글을 읽고 물음에 답하시오.") {
+  const enc = new TextEncoder();
+  const chars = [...text];
+
+  // Glyph ids are arbitrary; a real subset font numbers them by order of use.
+  const gid = new Map();
+  chars.forEach((ch) => { if (!gid.has(ch)) gid.set(ch, gid.size + 1); });
+  const hex = (n, w = 4) => n.toString(16).toUpperCase().padStart(w, "0");
+
+  const bf = [...gid.entries()]
+    .map(([ch, id]) => `<${hex(id)}> <${hex(ch.charCodeAt(0))}>`)
+    .join("\n");
+  const cmap =
+    "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n" +
+    "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n" +
+    `${gid.size} beginbfchar\n${bf}\nendbfchar\n` +
+    "endcmap CMapName currentdict /CMap defineresource pop end end";
+
+  const shown = chars.map((ch) => hex(gid.get(ch))).join("");
+  const content = `BT /F1 12 Tf 60 700 Td <${shown}> Tj ET`;
+
+  const objects = [
+    "<</Type/Catalog/Pages 2 0 R>>",
+    "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+    "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
+      "/Resources<</Font<</F1 4 0 R>>>>/Contents 7 0 R>>",
+    "<</Type/Font/Subtype/Type0/BaseFont/BatangChe/Encoding/Identity-H" +
+      "/DescendantFonts[5 0 R]/ToUnicode 6 0 R>>",
+    "<</Type/Font/Subtype/CIDFontType2/BaseFont/BatangChe/CIDSystemInfo" +
+      "<</Registry(Adobe)/Ordering(Korea1)/Supplement 2>>>>",
+    { stream: cmap },
+    { stream: content },
+  ];
+
+  const parts = [enc.encode("%PDF-1.5\n")];
+  let at = parts[0].length;
+  const offsets = [];
+  objects.forEach((body, i) => {
+    offsets.push(at);
+    let chunk;
+    if (typeof body === "object") {
+      const data = enc.encode(body.stream);
+      const head = enc.encode(`${i + 1} 0 obj\n<</Length ${data.length}>>stream\n`);
+      const tail = enc.encode("\nendstream\nendobj\n");
+      parts.push(head, data, tail);
+      at += head.length + data.length + tail.length;
+      return;
+    }
+    chunk = enc.encode(`${i + 1} 0 obj\n${body}\nendobj\n`);
+    parts.push(chunk);
+    at += chunk.length;
+  });
+
+  let tail = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) tail += `${String(off).padStart(10, "0")} 00000 n \n`;
+  tail += `trailer\n<</Size ${objects.length + 1}/Root 1 0 R>>\nstartxref\n${at}\n%%EOF\n`;
+  parts.push(enc.encode(tail));
+
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let cursor = 0;
+  for (const p of parts) { out.set(p, cursor); cursor += p.length; }
+  return out;
+}
+
 /** A PDF that is a photograph of a page: an image, and no text operators. */
 export function makeScannedPdf() {
   const enc = new TextEncoder();

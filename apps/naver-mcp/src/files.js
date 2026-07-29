@@ -22,6 +22,7 @@
  */
 
 import { NaverError, htmlToText } from "./naver.js";
+import { extractPdfText } from "./pdf.js";
 
 export const MOBILE_UA =
   "Mozilla/5.0 (Linux; Android 14; SM-S928N) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -97,40 +98,9 @@ async function fetchBinary(url, referer, { maxBody = MAX_BYTES } = {}) {
 
 /* ------------------------------------------------------------- inflate */
 
-async function inflateWith(bytes, format) {
-  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream(format));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-/**
- * Inflate, forgiving the padding real files carry.
- *
- * DecompressionStream refuses a stream with anything after it ("Trailing junk
- * found after the end of the compressed stream"), and virtually every PDF puts
- * a newline between the data and its `endstream` keyword. Left unhandled, that
- * one byte loses the entire stream - which is exactly what it was doing.
- */
-async function inflate(bytes) {
-  let end = bytes.length;
-  while (end > 0 && (bytes[end - 1] === 0x0a || bytes[end - 1] === 0x0d || bytes[end - 1] === 0x20)) {
-    end--;
-  }
-  const trimmed = bytes.subarray(0, end);
-  try {
-    return await inflateWith(trimmed, "deflate");
-  } catch (e) {
-    // Some producers write headerless DEFLATE, and some streams are simply
-    // truncated. Salvage what a raw inflate can reach before giving up.
-    try {
-      return await inflateWith(trimmed, "deflate-raw");
-    } catch {
-      throw e;
-    }
-  }
-}
-
 async function inflateRaw(bytes) {
-  return inflateWith(bytes, "deflate-raw");
+  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 /* ------------------------------------------------------------------ HWPX */
@@ -234,97 +204,6 @@ export function unzipEntries(buf) {
 
 /* ------------------------------------------------------------------- PDF */
 
-/** Undo the escapes PDF uses inside ( ) literal strings. */
-function unescapePdfString(s) {
-  return s.replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (_, esc) => {
-    const simple = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", "(": "(", ")": ")", "\\": "\\" };
-    if (simple[esc] !== undefined) return simple[esc];
-    return String.fromCharCode(parseInt(esc, 8));
-  });
-}
-
-/**
- * Pull text out of a PDF's own content streams.
- *
- * This is free and instant when it works, which is why it runs first - but it
- * only works when the text was stored as characters. Korean PDFs commonly
- * store glyph ids instead, which come out as noise, so the caller checks the
- * confidence before trusting the result.
- */
-export async function extractPdfStreams(buf) {
-  const latin = new TextDecoder("latin1").decode(buf);
-  const utf8 = new TextDecoder("utf-8", { fatal: false });
-  const pieces = [];
-  let streams = 0;
-  let imageStreams = 0;
-  let textOps = 0;
-
-  // "endstream" ends with "stream", so an unanchored match finds every stream
-  // twice - once at its start and once at its end. The second, phantom match
-  // reads the wrong object's dictionary and skews every count taken here.
-  const re = /(^|[^a-zA-Z])stream\r?\n/g;
-  let m;
-  while ((m = re.exec(latin)) !== null) {
-    const at = m.index + m[1].length;
-    const start = at + m[0].length - m[1].length;
-
-    // The stream's dictionary sits between its object header and the stream
-    // itself. Slicing a fixed window backwards instead reaches into whatever
-    // object came before - which made a text stream following an image look
-    // like an image, and threw its text away.
-    const objAt = latin.lastIndexOf(" obj", at);
-    const dictFrom = objAt >= 0 && at - objAt < 8000 ? objAt + 4 : Math.max(0, at - 600);
-    const dict = latin.slice(dictFrom, at);
-    const declared = Number((dict.match(/\/Length\s+(\d+)/) || [])[1] || 0);
-
-    let end = -1;
-    if (declared > 0 && latin.startsWith("endstream", start + declared)) {
-      end = start + declared;
-    } else if (declared > 0 && /^\s{0,4}endstream/.test(latin.slice(start + declared, start + declared + 13))) {
-      end = start + declared;
-    } else {
-      end = latin.indexOf("endstream", start);
-    }
-    if (end < 0) continue;
-    re.lastIndex = end;
-
-    if (/\/Image|\/DCTDecode|\/JPXDecode|\/JBIG2Decode|\/CCITTFaxDecode/.test(dict)) {
-      imageStreams++;
-      continue;
-    }
-
-    let bytes = buf.subarray(start, end);
-    if (/\/FlateDecode/.test(dict)) {
-      try {
-        bytes = await inflate(bytes);
-      } catch {
-        continue; // a stream we cannot open is not a reason to abandon the file
-      }
-    }
-    streams++;
-
-    const text = utf8.decode(bytes);
-    textOps += (text.match(/\)\s*Tj|\]\s*TJ/g) || []).length;
-    for (const t of text.matchAll(/\(((?:[^()\\]|\\[\s\S])*)\)\s*(?:Tj|TJ|'|")/g)) {
-      pieces.push(unescapePdfString(t[1]));
-    }
-    // TJ takes an array of fragments with kerning numbers between them.
-    for (const arr of text.matchAll(/\[((?:[^\][\\]|\\[\s\S])*)\]\s*TJ/g)) {
-      for (const t of arr[1].matchAll(/\(((?:[^()\\]|\\[\s\S])*)\)/g)) {
-        pieces.push(unescapePdfString(t[1]));
-      }
-    }
-    pieces.push("\n");
-  }
-
-  const text = pieces.join("").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-  const hangul = (text.match(HANGUL) || []).length;
-  // Glyph ids decoded as text show up as replacement characters and control
-  // bytes. Counting them is how a real extraction is told from noise.
-  const junk = (text.match(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
-  return { text, hangul, junk, streams, imageStreams, textOps };
-}
-
 /**
  * r.jina.ai renders the document and hands back text. No key, no account -
  * the same reader this server already falls back to for HTML pages.
@@ -388,35 +267,36 @@ export async function readPdf(url, buf) {
 
   if (buf && buf.byteLength <= RAW_ROUTE_LIMIT) {
     try {
-      const local = await extractPdfStreams(buf);
-      // Trust it only when the text came out as letters. A Korean PDF whose
-      // text is stored as glyph ids gives itself away: thousands of text
-      // operators, a handful of Hangul characters. Either the Hangul is
-      // clearly there, or there is none at all and the document is Latin.
-      if (local.textOps === 0 && local.imageStreams > 0) {
+      const local = await extractPdfText(buf);
+      // A page of pictures with no text operators is a scan, and that can be
+      // seen in the file itself - no second opinion required.
+      if (local.textOps === 0 && local.imageXObjects > 0) {
         throw new NaverError(
           "SCANNED_PDF",
-          `이 PDF는 글자 없이 이미지 ${local.imageStreams}개로만 되어 있습니다. 스캔본이라 텍스트를 뽑을 수 없습니다.`,
-          { url, images: local.imageStreams }
+          `이 PDF는 ${local.pages}쪽 전부가 글자 없는 이미지입니다. 스캔본이라 텍스트를 뽑을 수 없습니다.`,
+          { url, images: local.imageXObjects, pages: local.pages }
         );
       }
+      // Glyph ids now become characters through the file's own ToUnicode map,
+      // so a clean result is the normal case rather than the lucky one. What
+      // the check still catches is a font carrying no map at all, where the
+      // bytes cannot be named and come out as noise.
       const clean = local.junk < Math.max(8, local.text.length / 40);
-      const readable =
-        clean &&
-        local.text.length >= 20 &&
-        (local.hangul >= 50 || local.hangul === 0);
+      const readable = clean && local.text.length >= 20 && (local.hangul >= 20 || local.hangul === 0);
       trace.push({
-        route: "pdf-streams",
+        route: "pdf-local",
         result: readable ? "ok" : "low-confidence",
-        message: `${local.hangul} hangul, ${local.junk} junk, ${local.streams} streams`,
+        message:
+          `${local.hangul} hangul, ${local.junk} junk, ${local.pages} pages, ` +
+          `${local.mappedFonts} mapped fonts`,
       });
-      if (readable) return { text: local.text, pages: local.streams, how: "pdf-streams" };
+      if (readable) return { text: local.text, pages: local.pages, how: "pdf-local" };
     } catch (e) {
       if (e instanceof NaverError && e.kind === "SCANNED_PDF") throw e;
-      trace.push({ route: "pdf-streams", result: "failed", message: e.message });
+      trace.push({ route: "pdf-local", result: "failed", message: e.message });
     }
   } else {
-    trace.push({ route: "pdf-streams", result: "skipped", message: "파일이 커서 건너뜀" });
+    trace.push({ route: "pdf-local", result: "skipped", message: "파일이 커서 건너뜀" });
   }
 
   let viaReader = "";

@@ -11,7 +11,7 @@
  * Exits non-zero only if no PDF could be read at all.
  */
 
-import { readFile, extractPdfStreams } from "../src/files.js";
+import { readFile } from "../src/files.js";
 import { naverWebSearch } from "../src/tools.js";
 
 const HANGUL = /[가-힣]/g;
@@ -76,7 +76,7 @@ for (const url of [...new Set(found)].slice(0, 6)) {
 
 console.log("\n" + "=".repeat(74));
 const readable = rows.filter((r) => r.hangul > 50);
-const local = readable.filter((r) => r.how === "pdf-streams");
+const local = readable.filter((r) => r.how === "pdf-local");
 console.log(`PDFs read with Korean text : ${readable.length}/${rows.length}`);
 console.log(`  ...without any outside service : ${local.length}`);
 for (const r of rows) {

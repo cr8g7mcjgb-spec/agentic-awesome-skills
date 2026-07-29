@@ -8,7 +8,7 @@
  */
 
 import { createServer } from "node:http";
-import { makePdf, makeHwpx, makePng, makeHwp, makeScannedPdf } from "./fixtures.mjs";
+import { makePdf, makeHwpx, makePng, makeHwp, makeScannedPdf, makeCidPdf } from "./fixtures.mjs";
 
 // Which build to drive. Both bundles are deployed from, so the minified one
 // has to pass the same checks as the readable one.
@@ -35,6 +35,7 @@ async function serveFixtures() {
     "/paper.pdf": [makePdf(), "application/pdf"],
     "/korean.pdf": [makePdf(KOREAN_PASSAGE), "application/pdf"],
     "/compressed.pdf": [makePdf(KOREAN_PASSAGE, { compress: true }), "application/pdf"],
+    "/glyphs.pdf": [makeCidPdf(KOREAN_PASSAGE), "application/pdf"],
     "/page": [Buffer.from(
       "<!doctype html><html><head><title>공고문</title></head><body><article>" +
       "<p>이 페이지는 첨부파일이 아니라 웹 문서입니다. 파일 도구에 넣어도 본문이 나와야 합니다. " +
@@ -205,7 +206,7 @@ const run = async () => {
     const ko = await readFile(`${base}/korean.pdf`);
     const koText = ko.content?.[0]?.text || "";
     check("Korean PDF text comes from the PDF itself",
-      !ko.isError && koText.includes("감각만으로는 완결되지 않는다") && koText.includes("pdf-streams"),
+      !ko.isError && koText.includes("감각만으로는 완결되지 않는다") && koText.includes("pdf-local"),
       koText.split("\n").pop().slice(0, 40));
 
     // Real PDFs compress their content streams and put a newline before
@@ -215,8 +216,16 @@ const run = async () => {
     const zippedText = zipped.content?.[0]?.text || "";
     check("compressed PDF streams are read",
       !zipped.isError && zippedText.includes("감각만으로는 완결되지 않는다") &&
-        zippedText.includes("pdf-streams"),
+        zippedText.includes("pdf-local"),
       zippedText.split("\n").pop().slice(0, 40));
+
+    // The case that used to need an outside service: Korean stored as glyph
+    // ids, readable only through the file's own ToUnicode table.
+    const glyphs = await readFile(`${base}/glyphs.pdf`);
+    const glyphText = glyphs.content?.[0]?.text || "";
+    check("glyph-id Korean is decoded from the PDF's own table",
+      !glyphs.isError && glyphText.includes(KOREAN_PASSAGE) && glyphText.includes("pdf-local"),
+      glyphText.split("\n").pop().slice(0, 40));
 
     const hwpx = await readFile(`${base}/exam.hwpx`);
     const hwpxText = hwpx.content?.[0]?.text || "";
