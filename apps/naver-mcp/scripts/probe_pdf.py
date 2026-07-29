@@ -17,6 +17,7 @@ Prints a table. No conclusion is drawn here that the numbers do not support.
 """
 
 import gzip
+import html as html_module
 import json
 import re
 import ssl
@@ -66,8 +67,8 @@ def discover_pdfs(query, want=6):
             print(f"  search failed: {e}")
             continue
         html = body.decode("utf-8", "replace")
-        for m in re.finditer(r'href="(https?://[^"]+\.pdf)(?:[?"])', html, re.I):
-            link = m.group(1)
+        for m in re.finditer(r'href="(https?://[^"]+?\.pdf[^"]*)"', html, re.I):
+            link = html_module.unescape(m.group(1))
             if link not in found:
                 found.append(link)
         if len(found) >= want:
@@ -83,7 +84,9 @@ def try_direct(url):
     except urllib.error.HTTPError as e:
         return {"ok": False, "why": f"HTTP {e.code}"}
     except Exception as e:
-        return {"ok": False, "why": type(e).__name__}
+        # The exception class alone hides whether this was TLS, DNS or a
+        # refused connection - and those need completely different answers.
+        return {"ok": False, "why": f"{type(e).__name__}: {e}"[:120]}
     if not raw.startswith(b"%PDF"):
         return {"ok": False, "why": f"not a PDF ({ctype or 'no type'})"}
     return {"ok": True, "bytes": len(raw), "raw": raw}
@@ -136,7 +139,7 @@ def try_jina(url, attempts=1):
                 continue
             return last
         except Exception as e:
-            return {"ok": False, "why": type(e).__name__}
+            return {"ok": False, "why": f"{type(e).__name__}: {e}"[:120]}
     return last
 
 
@@ -144,8 +147,12 @@ def main():
     queries = [
         "수능 국어 영역 기출 문제지 pdf",
         "한국소비자원 보고서 pdf",
+        "국립국어원 보고서 pdf",
+        "교육부 보도자료 pdf",
     ]
-    urls = []
+    # A control that is known to be up and is definitely a PDF. If the routes
+    # fail even here, the problem is the route, not the Korean host.
+    urls = ["https://arxiv.org/pdf/1706.03762"]
     for q in queries:
         print(f"discovering PDFs for: {q}")
         hits = discover_pdfs(q, want=4)
@@ -159,7 +166,7 @@ def main():
         return 1
 
     rows = []
-    for url in urls[:6]:
+    for url in urls[:8]:
         print(f"\n--- {url[:110]}")
         direct = try_direct(url)
         if not direct["ok"]:
@@ -194,17 +201,31 @@ def main():
     print("\n" + "=" * 78)
     print("SUMMARY")
     print("=" * 78)
-    jina_ok = sum(1 for r in rows if r.get("jina", {}).get("ok") and r["jina"]["hangul"] > 50)
-    streams_ok = sum(1 for r in rows if r.get("streams", {}).get("hangul", 0) > 50)
-    measured = sum(1 for r in rows if "streams" in r)
-    print(f"PDFs actually fetched      : {measured}/{len(rows)}")
-    print(f"r.jina.ai gave Korean text : {jina_ok}/{measured}")
-    print(f"raw streams gave Korean    : {streams_ok}/{measured}")
+    korean = [r for r in rows if "streams" in r and not r["url"].startswith("https://arxiv.org")]
+    control = next((r for r in rows if r["url"].startswith("https://arxiv.org")), None)
+
+    if control:
+        cj = control.get("jina", {})
+        print(
+            "control (English PDF)      : "
+            + (f"jina {cj['chars']:,} chars" if cj.get("ok") else f"jina {cj.get('why')}")
+            + f", {control['streams']['text_ops']} text ops from raw streams"
+        )
+    else:
+        print("control (English PDF)      : not fetched")
+
+    jina_ok = sum(1 for r in korean if r.get("jina", {}).get("ok") and r["jina"]["hangul"] > 50)
+    streams_ok = sum(1 for r in korean if r["streams"]["hangul"] > 50)
+    print(f"Korean PDFs fetched        : {len(korean)}/{len(rows) - (1 if control else 0)}")
+    print(f"r.jina.ai gave Korean text : {jina_ok}/{len(korean) or '-'}")
+    print(f"raw streams gave Korean    : {streams_ok}/{len(korean) or '-'}")
 
     with open("pdf-probe.json", "w") as fh:
         json.dump(rows, fh, ensure_ascii=False, indent=2)
 
-    # The gate: at least one keyless route has to work on a real PDF.
+    # The gate: at least one keyless route has to work on a real Korean PDF.
+    # A passing control proves the route works but says nothing about Hangul,
+    # so it deliberately does not count towards the gate.
     return 0 if (jina_ok or streams_ok) else 1
 
 
