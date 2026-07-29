@@ -8,7 +8,12 @@ on:
   push:
     branches: ["claude/naver-content-mcp-server-9h9t07"]
     paths:
+      # The reader itself, not just the probe - changing how PDFs are parsed
+      # is exactly when this needs to run, and watching only the probe meant
+      # it stayed silent through the changes that mattered.
+      - "apps/naver-mcp/src/**"
       - "apps/naver-mcp/scripts/probe_pdf.py"
+      - "apps/naver-mcp/scripts/test_pdf_live.mjs"
       - ".github/workflows/naver-pdf-probe.yml"
   workflow_dispatch:
 
