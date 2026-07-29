@@ -72,22 +72,21 @@ jobs:
         with:
           node-version: "22"
 
+      # The PDF and HWPX readers are npm packages, so the tools no longer run
+      # from a bare checkout.
+      - name: Install dependencies
+        working-directory: apps/naver-mcp
+        run: npm ci --no-audit --no-fund
+
       - name: Exercise every tool
         working-directory: apps/naver-mcp
         run: |
           node scripts/test_entities.mjs
           node scripts/test_tools.mjs
 
-      - name: Build the pasteable single-file bundle
+      - name: Build both bundles
         working-directory: apps/naver-mcp
         run: node scripts/bundle.mjs
-
-      - name: Build the minified bundle
-        working-directory: apps/naver-mcp
-        run: |
-          npm install --no-audit --no-fund --silent esbuild
-          npx esbuild src/index.js --bundle --format=esm --target=es2022 \
-            --minify --outfile=dist/worker.min.js
 
       - name: Drive both bundles over JSON-RPC
         working-directory: apps/naver-mcp
@@ -95,16 +94,16 @@ jobs:
           node scripts/test_worker.mjs dist/worker.js
           node scripts/test_worker.mjs dist/worker.min.js
 
-      - name: Confirm the committed bundle matches src
+      - name: Confirm the committed bundles match src
         working-directory: apps/naver-mcp
         run: |
-          if ! git diff --quiet -- dist/worker.js; then
-            echo "dist/worker.js is stale - run 'node scripts/bundle.mjs' and commit it." >&2
-            git diff --stat -- dist/worker.js
+          if ! git diff --quiet -- dist; then
+            echo "dist is stale - run 'npm run build' and commit it." >&2
+            git diff --stat -- dist
             exit 1
           fi
 
-      - name: Upload pasteable bundle
+      - name: Upload built bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: worker-bundle

@@ -18,6 +18,10 @@ fetch at the edge sidesteps that, since the edge is not behind that proxy.
 | `naver_news_read(url)` | Full article body from `n.news.naver.com`. |
 | `naver_cafe_search(query, count)` | Public cafe posts only. Member-only boards are not attempted. |
 | `naver_place_reviews(query)` | Blog reviews written about a place. |
+| `naver_web_search(query, count)` | Web tab — government and public agencies, institutes, journals. |
+| `naver_restaurant_reviews(query)` | Star-rated visitor reviews plus blog write-ups for one place. |
+| `read_article(url)` | Body of any page — Naver, Tistory, government sites. Hands file URLs to `read_file`. |
+| `read_file(url)` | PDF and HWPX as text; images as an MCP image block. |
 
 ## Fallback chain
 
@@ -39,8 +43,14 @@ Failures are classified rather than collapsed into one message, because
 
 - `BLOCKED` — HTTP 403/429, or a genuine block page
 - `PARSE_FAILED` — page fetched fine, no known container matched
+- `LOGIN_REQUIRED` — member-only cafe post; retrying will not help
+- `CLIENT_RENDERED` — the site builds its body in the browser (Kakao Map, TMap)
 - `NOT_FOUND` — post deleted or private
+- `SCANNED_PDF` — a PDF with no text layer
+- `UNSUPPORTED_FORMAT` / `TOO_LARGE` — file the reader will not attempt
 - `TRANSPORT` / `UPSTREAM` — network or Naver-side error
+
+Each one carries a hint telling the model whether a retry is worth anything.
 
 Failed blog reads include the per-route trace so you can see what each fallback did.
 
@@ -63,33 +73,45 @@ Code sandbox, can reach Naver):
   deployed endpoint over JSON-RPC exactly like a Claude connector does
   (`initialize` → `tools/list` → `tools/call`) and asserts real body text comes back.
 
-## File formats: what was measured
+## File formats
 
-Most Korean reference material — past exam papers, government reports — is
-distributed as PDF, HWP, or scans, which the HTML reader cannot touch. These
-numbers come from building and running the libraries, not from estimating:
+Most Korean reference material — past exam papers, government reports, notices
+— is distributed as PDF, HWP, or a scan, none of which the HTML reader can
+touch. `read_file` handles them, and `read_article` hands a file URL over
+automatically, so a link from search works whichever tool the model reaches for.
 
-| Format | Verdict | Basis |
+The format is decided by Content-Type, then by extension, then by magic bytes —
+Korean download links routinely look like `?fileId=1234` with no extension and
+`application/octet-stream` on the response.
+
+| Format | Result | Verified by |
 | --- | --- | --- |
-| PDF (text layer) | Works | `unpdf` extracted `"2026 SUNEUNG KOREAN"` from a hand-built PDF |
-| HWPX | Expected to work | ZIP + XML; `fflate` unzips it |
-| HWP (legacy binary) | Hard | Proprietary compound-binary format, no small JS reader |
-| Scanned PDF / images | No text to extract | Pass the image to the model instead — MCP supports image content blocks, and a model that can see the page reads tables and layout that OCR would flatten |
+| PDF with a text layer | Text | `unpdf` extracting a built-in fixture through the bundled Worker |
+| HWPX | Text | `fflate` unzip + `<hp:t>` runs from `Contents/section*.xml` |
+| Images (PNG/JPEG/…) | An MCP **image block**, not OCR output | Base64 round-trip asserted in `test_worker.mjs` |
+| Scanned PDF | `SCANNED_PDF` | Text length compared against page count |
+| Legacy `.hwp` | `UNSUPPORTED_FORMAT` + how to convert | OLE signature detection |
 
-**Bundle cost**, measured with `esbuild --minify` over `unpdf` + `fflate`:
+Images go to the model as images. OCR was ruled out rather than attempted —
+Korean language data alone runs to tens of megabytes, past the Worker limit —
+and a model that can see the page reads tables, diagrams and layout that OCR
+would flatten into a line of characters.
+
+Size caps: 12 MB per file, 4 MB per image, both refused up front with the
+measured size rather than dying halfway through.
+
+**Bundle cost.** `unpdf` + `fflate` take the Worker from 57 KB to:
 
 ```
-raw    1,618,632 bytes
-gzip     503,073 bytes     limit: 3 MB (Workers free)
+dist/worker.js      raw 2,457,597   gzip 594,427
+dist/worker.min.js  raw 1,664,983   gzip 519,837
+                                    limit 3,145,728 (Workers gzip)
 ```
 
-It fits the Worker limit with room to spare, but it is ~30× the current
-57 KB bundle, which puts it far beyond what the dashboard's code editor can
-take on a phone. **Adding format support means deploying from Git rather than
-by pasting.**
-
-OCR was ruled out rather than attempted: Korean language data alone runs to
-tens of megabytes, well past the Worker limit.
+It fits with room to spare, but it is far past what the Cloudflare dashboard's
+code editor can take — **format support means deploying from Git or with
+wrangler, not by pasting.** `scripts/bundle.mjs` fails the build if a bundle
+ever crosses the limit.
 
 ## Deploying
 

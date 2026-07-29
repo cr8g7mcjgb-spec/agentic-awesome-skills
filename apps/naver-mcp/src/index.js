@@ -17,6 +17,7 @@ import {
   naverWebSearch,
   naverRestaurantReviews,
   readArticle,
+  readFileUrl,
 } from "./tools.js";
 
 const SERVER_INFO = { name: "naver-content-mcp", version: "1.0.0" };
@@ -94,6 +95,23 @@ const TOOLS = [
         max_chars: {
           type: "integer",
           description: "본문 최대 글자수 (기본 8000, 0이면 무제한). 잘린 경우 응답에 명시된다.",
+          minimum: 0,
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "read_file",
+    description:
+      "PDF·HWPX·이미지 파일을 URL로 읽는다. PDF와 HWPX는 본문 텍스트를 뽑아 돌려주고, 이미지는 그림 그대로 넘겨 눈으로 보고 분석하게 한다. 기출문제, 정부·기관 보고서, 공고문처럼 첨부파일로 배포되는 자료에 쓴다. read_article 에 파일 주소를 넣어도 자동으로 이 경로를 탄다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "파일 주소 (.pdf / .hwpx / 이미지, 확장자가 없어도 시도한다)" },
+        max_chars: {
+          type: "integer",
+          description: "문서 텍스트 최대 글자수 (기본 8000, 0이면 무제한). 이미지에는 적용되지 않는다.",
           minimum: 0,
         },
       },
@@ -179,6 +197,7 @@ const HANDLERS = {
   naver_web_search: naverWebSearch,
   naver_restaurant_reviews: naverRestaurantReviews,
   read_article: readArticle,
+  read_file: readFileUrl,
 };
 
 // Advertising a tool with no handler produces "Unknown tool" only when someone
@@ -207,6 +226,12 @@ function describeFailure(err) {
           "회원 전용/비공개 글이라 로그인 없이는 읽을 수 없습니다. 서버 문제가 아니므로 재시도해도 소용없습니다. 사용자에게 '이 글은 회원 전용이라 열람할 수 없다'고 알리고, 검색 결과의 다른 글을 시도하세요.",
         CLIENT_RENDERED:
           "이 사이트는 내용을 브라우저에서 따로 불러오는 구조라 서버가 본문을 읽을 수 없습니다. 재시도해도 소용없습니다. 사용자에게 그 사이트는 읽을 수 없다고 알리고, 안내에 적힌 대체 도구를 쓰세요.",
+        SCANNED_PDF:
+          "스캔 이미지로 만들어진 PDF라 텍스트가 없습니다. 재시도해도 소용없습니다. 페이지를 이미지로 받을 수 있으면 read_file 에 이미지 주소를 넣어 눈으로 읽으세요.",
+        UNSUPPORTED_FORMAT:
+          "지원하지 않는 파일 형식입니다. 재시도해도 소용없습니다. 사용자에게 어떤 형식이 필요한지 안내에 적힌 대로 알리세요.",
+        TOO_LARGE:
+          "파일이 처리 한도를 넘습니다. 재시도해도 소용없습니다. 더 작은 파일이나 분할본을 시도하세요.",
         NOT_FOUND: "해당 글이 존재하지 않거나 삭제/비공개 상태입니다.",
         BAD_INPUT: "입력값이 올바르지 않습니다.",
         TRANSPORT: "네트워크 요청 자체가 실패했습니다.",
@@ -230,8 +255,13 @@ async function callTool(name, args) {
     return { content: [{ type: "text", text: `[BAD_INPUT] Unknown tool: ${name}` }], isError: true };
   }
   try {
-    const text = await fn(args || {});
-    return { content: [{ type: "text", text }] };
+    const out = await fn(args || {});
+    // A tool that read an image returns content blocks, because a picture has
+    // to reach the model as a picture. Everything else returns plain text.
+    if (out && typeof out === "object" && Array.isArray(out.blocks)) {
+      return { content: out.blocks };
+    }
+    return { content: [{ type: "text", text: out }] };
   } catch (err) {
     return { content: [{ type: "text", text: describeFailure(err) }], isError: true };
   }
@@ -262,6 +292,9 @@ async function handleRpc(msg) {
           "- 카페 공개글 → naver_cafe_search\n\n" +
           "read_article 은 사이트 종류를 가리지 않는다. 검색으로 얻은 링크는 " +
           "네이버든 티스토리든 정부 사이트든 그대로 넣으면 된다.\n" +
+          "PDF·HWPX·이미지 첨부파일은 read_file 로 읽는다. 기출문제·보고서·공고문처럼 " +
+          "본문이 첨부파일에 들어 있는 자료는 링크를 그대로 read_file 에 넣어라. " +
+          "이미지는 텍스트가 아니라 그림으로 돌아오므로 직접 보고 분석하면 된다.\n" +
           "모든 본문 응답에는 출처 링크가 포함되므로, 사용자에게 답할 때 그 링크를 함께 제시하라.",
       });
     }
@@ -301,8 +334,7 @@ code{background:#f3f4f6;padding:.15em .4em;border-radius:4px}</style>
 <h1>Naver Content MCP</h1>
 <p>Authless remote MCP server. Add this URL as a custom connector:</p>
 <p><code id="u"></code></p>
-<p>Tools: naver_blog_search, naver_blog_read, naver_news_search, naver_news_read,
-naver_cafe_search, naver_place_reviews.</p>
+<p>Tools (${TOOLS.length}): ${TOOLS.map((t) => t.name).join(", ")}.</p>
 <script>document.getElementById('u').textContent=location.origin+'/mcp'</script>`;
 
 export default {

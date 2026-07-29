@@ -55,7 +55,23 @@ const run = async () => {
 
   const list = await rpc("tools/list", {});
   const names = (list?.result?.tools || []).map((t) => t.name);
-  check("tools/list returns 6 tools", names.length === 6, names.join(", "));
+  // Named rather than counted: this runs against whatever is deployed, and a
+  // count tells you a build is old without telling you what is missing.
+  const REQUIRED = [
+    "naver_blog_search",
+    "naver_blog_read",
+    "naver_news_search",
+    "naver_news_read",
+    "naver_cafe_search",
+    "naver_place_reviews",
+    "naver_web_search",
+    "naver_restaurant_reviews",
+    "read_article",
+    "read_file",
+  ];
+  const missing = REQUIRED.filter((n) => !names.includes(n));
+  check(`tools/list exposes all ${REQUIRED.length} tools`, missing.length === 0,
+    missing.length ? `missing: ${missing.join(", ")}` : names.join(", "));
 
   // Search, then read the first hit - the full path a connector would take.
   const search = await rpc("tools/call", {

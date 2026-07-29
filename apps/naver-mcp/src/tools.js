@@ -24,6 +24,8 @@ import {
   sleep,
 } from "./naver.js";
 
+import { readFile, detectKind } from "./files.js";
+
 const SEARCH_REFERER = "https://m.search.naver.com/";
 const MAX_COUNT = 100;
 const PAGE_SIZE = 30;
@@ -281,6 +283,11 @@ export async function readArticle({ url, max_chars }) {
     })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
   }
 
+  // Search results link straight at PDFs and HWPs as often as at pages, and
+  // running those through the HTML reader yields binary noise. Hand them off
+  // rather than making the caller notice and pick a different tool.
+  if (detectKind(raw)) return readFileUrl({ url: raw, max_chars });
+
   // Anything else - government sites, journals, ordinary news - reads through
   // the generic path. Naver's search links out to all of these, so refusing
   // unrecognised hosts would make search results unopenable.
@@ -300,6 +307,45 @@ export async function readArticle({ url, max_chars }) {
     strategy: post.strategy,
     extra: `사이트: ${host}`,
   })}\n\n---\n\n${capLength(post.text, max_chars).text}`;
+}
+
+/* ----------------------------------------------------------- 2d. file read */
+
+/**
+ * Read a PDF, HWPX, or image by URL.
+ *
+ * Returns text for documents and an image block for pictures, so the caller
+ * gets whichever form the file can actually be understood in.
+ */
+export async function readFileUrl({ url, max_chars }) {
+  const raw = String(url || "").trim();
+  if (!/^https?:\/\//i.test(raw)) {
+    throw new NaverError("BAD_INPUT", "A full http(s):// URL is required.", { url: raw });
+  }
+
+  let origin = null;
+  try {
+    origin = new URL(raw).origin + "/";
+  } catch {
+    /* referer is optional */
+  }
+
+  const res = await readFile(raw, { referer: origin });
+
+  if (res.type === "image") {
+    return {
+      blocks: [
+        { type: "text", text: `출처: ${raw}\n형식: 이미지 (${res.mimeType}, ${(res.bytes / 1024).toFixed(0)}KB)` },
+        { type: "image", data: res.base64, mimeType: res.mimeType },
+      ],
+    };
+  }
+
+  const header = [
+    `출처: ${raw}`,
+    `형식: ${res.how === "pdf-text-layer" ? "PDF" : "HWPX"} · ${res.pages}${res.how === "pdf-text-layer" ? "쪽" : "개 구역"}`,
+  ].join("\n");
+  return `${header}\n\n---\n\n${capLength(res.text, max_chars).text}`;
 }
 
 /* --------------------------------------------------- 2c. integrated web search */

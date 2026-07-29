@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "build:min": "esbuild src/index.js --bundle --format=esm --target=es2022 --minify --outfile=dist/worker.min.js",
+    "build": "node scripts/bundle.mjs",
+    "test:worker": "node scripts/test_worker.mjs dist/worker.js",
     "test:tools": "node scripts/test_tools.mjs",
     "test:probe": "python3 scripts/naver_probe.py"
   },
