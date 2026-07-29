@@ -69,6 +69,12 @@ async function serveFixtures() {
     "/scan.png": [makePng(), "image/png"],
     "/scan.pdf": [makeScannedPdf(), "application/pdf"],
     "/old.hwp": [makeHwp(), "application/x-hwp"],
+    // What a session-bound download actually answers with: HTTP 200 and a
+    // scrap of error page. Read as an article it looks like a parse failure.
+    "/sessionfile": [Buffer.from(
+      "<html><head><title>오류</title></head><body><script>alert('잘못된 접근입니다.');</script>" +
+      "<p>세션이 만료되었습니다.</p></body></html>"
+    ), "text/html; charset=utf-8"],
   };
   const server = createServer((req, res) => {
     const hit = files[req.url];
@@ -317,6 +323,13 @@ const run = async () => {
     check("a script-driven download is rebuilt into a real address",
       noticeText.includes("/cmm/fms/FileDown.do?atchFileId=FILE_000000000012345&fileSn=0"),
       noticeText.split("첨부파일").pop()?.slice(0, 70).replace(/\n/g, " ") || "");
+
+    // The most common silent failure on Korean institution sites, per the
+    // scrapers that hit them: the download answers 200 with an error page.
+    const gated = await readFile(`${base}/sessionfile`);
+    check("a download that returns an error page says so",
+      gated.isError && (gated.content?.[0]?.text || "").includes("LOGIN_REQUIRED"),
+      (gated.content?.[0]?.text || "").slice(0, 50).replace(/\n/g, " "));
 
     const missing = await readFile(`${base}/gone.pdf`);
     check("a missing file is NOT_FOUND, not a parse failure",

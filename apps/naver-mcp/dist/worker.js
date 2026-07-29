@@ -363,40 +363,68 @@ var FILE_WORD = /file|attach|atch|download|down_?load|fdown|streamdocs|synap|첨
 function findDownloadEndpoints(html) {
   const found = [];
   const seen = /* @__PURE__ */ new Set();
-  const re = /["'`]([^"'`\s<>]*?(?:file|atch|down)[^"'`\s<>]*?\.(?:do|jsp|php|es|nx|act))["'`]/gi;
+  const re = /["'`]([^"'`\s<>]*?(?:file|atch|down|bbs)[^"'`\s<>?]*?\.(?:do|jsp|php|es|nx|act))(\?[A-Za-z_]\w*=)?/gi;
   let m;
   while ((m = re.exec(html)) !== null) {
     const path = m[1];
     if (!/down|fms|atch/i.test(path)) continue;
     if (seen.has(path)) continue;
     seen.add(path);
-    found.push(path);
+    found.push({ path, param: m[2] ? m[2].slice(1, -1) : null });
     if (found.length >= 6) break;
   }
   return found;
 }
-function fromHandler(call, endpoints, pageUrl) {
-  const fn = /([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/.exec(call);
+var PARAM_SETS = [
+  { id: "atchFileId", sn: "fileSn" },
+  // eGovFrame /cmm/fms/FileDown.do
+  { id: "fileSeq", sn: null },
+  // boardCnts - 평가원, 교육청, 학교
+  { id: "atchmnflNo", sn: null },
+  // downloadBbsFile.do - 지자체, 대학
+  { id: "fileId", sn: "fileSn" },
+  { id: "fileNo", sn: null },
+  { id: "fileIdx", sn: null }
+];
+function endpointForFunction(html, name) {
+  const at = html.search(new RegExp(`function\\s+${name.replace(/[.$]/g, "\\$&")}\\s*\\(`));
+  if (at < 0) return null;
+  const body = html.slice(at, at + 900);
+  const found = findDownloadEndpoints(body);
+  return found.length ? found[0] : null;
+}
+function fromHandler(call, endpoints, pageUrl, html = "") {
+  const fn = /([A-Za-z_$][\w$.]*)\s*\(([^)]*)\)/.exec(call);
   if (!fn) return [];
   const name = fn[1];
   if (!FILE_WORD.test(name)) return [];
   const args = [...fn[2].matchAll(/['"]([^'"]*)['"]|(\d+)/g)].map((a) => a[1] ?? a[2]).filter((a) => a !== "" && a !== void 0);
   if (!args.length) return [];
-  const id = args.find((a) => /^[A-Za-z_]*\d{3,}/.test(a)) ?? args[0];
+  const id = args.find((a) => a.length >= 6) ?? args[0];
   const rest = args.filter((a) => a !== id);
-  const sn = rest.find((a) => /^\d{1,3}$/.test(a)) ?? "0";
-  const params = /^FILE_/i.test(id) ? [`atchFileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`] : [
-    `atchFileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`,
-    `fileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`
-  ];
+  const sn = rest.find((a) => /^\d{1,3}$/.test(a));
+  const own = html ? endpointForFunction(html, name) : null;
+  const ordered = own ? [own, ...endpoints.filter((e) => e.path !== own.path)] : endpoints;
   const out = [];
-  for (const endpoint of endpoints.slice(0, 3)) {
-    for (const q of params) {
-      try {
-        out.push(new URL(`${endpoint}${endpoint.includes("?") ? "&" : "?"}${q}`, pageUrl).href);
-      } catch {
+  const seen = /* @__PURE__ */ new Set();
+  const push = (endpoint, query) => {
+    try {
+      const u = new URL(`${endpoint}${endpoint.includes("?") ? "&" : "?"}${query}`, pageUrl).href;
+      if (!seen.has(u)) {
+        seen.add(u);
+        out.push(u);
       }
+    } catch {
     }
+  };
+  for (const { path: endpoint, param } of ordered.slice(0, 3)) {
+    const ranked = param ? [{ id: param, sn: PARAM_SETS.find((p) => p.id === param)?.sn ?? null }, ...PARAM_SETS] : PARAM_SETS;
+    for (const p of ranked) {
+      const q = p.sn && sn !== void 0 ? `${p.id}=${encodeURIComponent(id)}&${p.sn}=${encodeURIComponent(sn)}` : `${p.id}=${encodeURIComponent(id)}`;
+      push(endpoint, q);
+      if (out.length >= 6) break;
+    }
+    if (out.length >= 6) break;
   }
   return out;
 }
@@ -433,24 +461,31 @@ function extractAttachments(html, pageUrl) {
   for (const m of html.matchAll(/<a\b([^>]*)>([\s\S]{0,400}?)<\/a>/gi)) {
     if (out.length >= 25) break;
     const a = readAnchor(m[1], m[2]);
-    const label = htmlToText(a.download || a.text || a.title || "").replace(/\s+/g, " ").trim();
-    const href = decodeAllEntities(a.href || "").trim();
+    const imgAlt = (/<img\b[^>]*\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(a.text) || []).slice(1).find(Boolean);
+    const label = [a.download, htmlToText(a.text || ""), a.title, imgAlt].map((v) => (v || "").replace(/\s+/g, " ").trim()).find((v) => v.length > 0) || "";
+    const href = decodeAllEntities((a.href || "").replace(/\s+/g, "")).trim();
     const handler = a.onclick || (/^javascript:/i.test(href) ? href.replace(/^javascript:/i, "") : "");
-    const labelIsFile = DOC_EXT.test(label) || DOC_EXT.test(a.download || "") || DOC_EXT.test(a.title || "");
+    const named = [label, a.download, a.title, imgAlt].find((v) => v && DOC_EXT.test(v));
+    const labelIsFile = Boolean(named);
     const regional = inFileRegion(m.index);
     const hrefIsFile = href && (DOC_EXT.test(href) || FILE_WORD.test(href));
     if (handler && (labelIsFile || regional || FILE_WORD.test(handler))) {
-      const guesses = fromHandler(handler, endpoints, pageUrl);
-      for (const g of guesses.slice(0, 2)) add(g, label || "\uCCA8\uBD80\uD30C\uC77C", "script handler");
-      if (!guesses.length && label) {
-        out.push({ url: null, label: label.slice(0, 90), why: "handler", handler: handler.slice(0, 120) });
+      const shown = named || label || "\uCCA8\uBD80\uD30C\uC77C";
+      const guesses = fromHandler(handler, endpoints, pageUrl, html);
+      for (const g of guesses.slice(0, 3)) add(g, shown, "script handler");
+      if (!guesses.length) {
+        out.push({ url: null, label: shown.slice(0, 90), why: "handler", handler: handler.slice(0, 120) });
       }
       continue;
     }
     if (!href || /^(?:#|mailto:|tel:)/i.test(href)) continue;
     if (!labelIsFile && !regional && !hrefIsFile) continue;
     try {
-      add(new URL(href, pageUrl).href, label || "\uCCA8\uBD80\uD30C\uC77C", labelIsFile ? "label" : regional ? "region" : "address");
+      add(
+        new URL(href, pageUrl).href,
+        named || label || "\uCCA8\uBD80\uD30C\uC77C",
+        labelIsFile ? "label" : regional ? "region" : "address"
+      );
     } catch {
     }
   }
@@ -1091,7 +1126,31 @@ async function fetchBinary(url, referer, { maxBody = MAX_BYTES } = {}) {
       { url, bytes: buf.byteLength }
     );
   }
-  return { buf, contentType, declared };
+  return { buf, contentType, declared, filename: filenameFrom(resp.headers) };
+}
+function filenameFrom(headers) {
+  const cd = headers.get("Content-Disposition") || "";
+  if (!cd) return "";
+  const star = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(cd);
+  if (star) {
+    try {
+      return decodeURIComponent(star[2].trim());
+    } catch {
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)/i.exec(cd);
+  if (!plain) return "";
+  const raw = (plain[1] ?? plain[2] ?? "").trim();
+  if (!raw) return "";
+  const bytes = Uint8Array.from([...raw].map((c) => c.charCodeAt(0) & 255));
+  for (const label of ["utf-8", "euc-kr"]) {
+    try {
+      const decoded = new TextDecoder(label, { fatal: true }).decode(bytes);
+      if (decoded && !/\uFFFD/.test(decoded)) return decoded;
+    } catch {
+    }
+  }
+  return raw;
 }
 async function inflateRaw(bytes) {
   const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
@@ -1288,10 +1347,10 @@ function readImage(buf, contentType, url) {
   return { base64: toBase64(buf), mimeType: mime, bytes: buf.byteLength };
 }
 async function readFile(url, { referer } = {}) {
-  const { buf, contentType, declared } = await fetchBinary(url, referer, {
+  const { buf, contentType, declared, filename } = await fetchBinary(url, referer, {
     maxBody: RAW_ROUTE_LIMIT
   });
-  let kind = detectKind(url, contentType);
+  let kind = detectKind(url, contentType) || (filename ? detectKind(filename) : null);
   if (!buf) {
     if (kind === "pdf") return { type: "text", ...await readPdf(url, null) };
     if (declared > MAX_BYTES) {
@@ -1314,18 +1373,28 @@ async function readFile(url, { referer } = {}) {
     else if (buf[0] === 255 && buf[1] === 216) kind = "image";
     else if (buf[0] === 137 && buf[1] === 80) kind = "image";
     else if (/^\s*<(?:!doctype|html|\?xml)/i.test(new TextDecoder().decode(buf.subarray(0, 200)))) {
+      const page = new TextDecoder().decode(buf.subarray(0, 4e3));
+      const words = page.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ").trim();
+      const complains = /로그인|세션|잘못된 접근|권한|만료|오류|error|expired|invalid/i.test(words);
+      if (words.length < 150 || complains && words.length < 400) {
+        throw new NaverError(
+          "LOGIN_REQUIRED",
+          "\uB2E4\uC6B4\uB85C\uB4DC \uC8FC\uC18C\uAC00 \uD30C\uC77C \uB300\uC2E0 \uC9E7\uC740 \uC624\uB958 \uD398\uC774\uC9C0\uB97C \uB3CC\uB824\uC92C\uC2B5\uB2C8\uB2E4. \uC774 \uC11C\uBC84\uB294 \uAC8C\uC2DC\uAE00\uC744 \uBA3C\uC800 \uC5F0 \uC138\uC158\uC5D0\uC11C\uB9CC \uCCA8\uBD80\uD30C\uC77C\uC744 \uB0B4\uC8FC\uB294 \uBC29\uC2DD\uC785\uB2C8\uB2E4. read_article \uB85C \uAC8C\uC2DC\uAE00\uC744 \uBA3C\uC800 \uC5F4\uACE0, \uAC70\uAE30 \uB098\uC628 \uB2E4\uB978 \uCCA8\uBD80\uD30C\uC77C \uC8FC\uC18C\uB97C \uC2DC\uB3C4\uD558\uC138\uC694.",
+          { url, bytes: buf.byteLength, sample: words.slice(0, 120) }
+        );
+      }
       kind = "html";
     }
   }
   switch (kind) {
     case "pdf":
-      return { type: "text", ...await readPdf(url, buf) };
+      return { type: "text", filename, ...await readPdf(url, buf) };
     case "hwpx":
-      return { type: "text", ...await readHwpxBytes(buf, url) };
+      return { type: "text", filename, ...await readHwpxBytes(buf, url) };
     case "hwp":
       return rejectHwp(url);
     case "image":
-      return { type: "image", ...readImage(buf, contentType, url) };
+      return { type: "image", filename, ...readImage(buf, contentType, url) };
     case "html":
       return { type: "html" };
     default:
@@ -1594,6 +1663,7 @@ async function readFileUrl({ url, max_chars, _fromArticle = false }) {
   }
   const header = [
     `\uCD9C\uCC98: ${raw}`,
+    ...res.filename ? [`\uD30C\uC77C\uBA85: ${res.filename}`] : [],
     `\uD615\uC2DD: ${res.how.startsWith("pdf") || res.how === "jina-reader" ? "PDF" : "HWPX"} (${res.how})`
   ].join("\n");
   return `${header}

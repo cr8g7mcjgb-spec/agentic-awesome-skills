@@ -93,7 +93,43 @@ async function fetchBinary(url, referer, { maxBody = MAX_BYTES } = {}) {
       { url, bytes: buf.byteLength }
     );
   }
-  return { buf, contentType, declared };
+  return { buf, contentType, declared, filename: filenameFrom(resp.headers) };
+}
+
+/**
+ * The filename the server declares, which is the only authoritative one.
+ *
+ * Older Korean servers send it in the legacy encoding without saying so, and
+ * it arrives as mojibake unless the bytes are put back and re-read as EUC-KR.
+ */
+function filenameFrom(headers) {
+  const cd = headers.get("Content-Disposition") || "";
+  if (!cd) return "";
+
+  const star = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(cd);
+  if (star) {
+    try {
+      return decodeURIComponent(star[2].trim());
+    } catch {
+      /* fall through to the plain parameter */
+    }
+  }
+
+  const plain = /filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)/i.exec(cd);
+  if (!plain) return "";
+  const raw = (plain[1] ?? plain[2] ?? "").trim();
+  if (!raw) return "";
+
+  const bytes = Uint8Array.from([...raw].map((c) => c.charCodeAt(0) & 0xff));
+  for (const label of ["utf-8", "euc-kr"]) {
+    try {
+      const decoded = new TextDecoder(label, { fatal: true }).decode(bytes);
+      if (decoded && !/\uFFFD/.test(decoded)) return decoded;
+    } catch {
+      /* try the next encoding */
+    }
+  }
+  return raw;
 }
 
 /* ------------------------------------------------------------- inflate */
@@ -400,10 +436,10 @@ export function readImage(buf, contentType, url) {
  * download links routinely end in `?fileId=` with no extension at all.
  */
 export async function readFile(url, { referer } = {}) {
-  const { buf, contentType, declared } = await fetchBinary(url, referer, {
+  const { buf, contentType, declared, filename } = await fetchBinary(url, referer, {
     maxBody: RAW_ROUTE_LIMIT,
   });
-  let kind = detectKind(url, contentType);
+  let kind = detectKind(url, contentType) || (filename ? detectKind(filename) : null);
 
   // Body skipped because the file is large. A PDF is still readable - the
   // reader fetches it itself - but nothing else here can work without bytes.
@@ -433,15 +469,33 @@ export async function readFile(url, { referer } = {}) {
     else if (/^\s*<(?:!doctype|html|\?xml)/i.test(new TextDecoder().decode(buf.subarray(0, 200)))) {
       // A download link that turned out to be a web page. Say so instead of
       // refusing it - the caller has an HTML reader and can just use it.
+      //
+      // Unless there is nothing in it. A session-bound download answers HTTP
+      // 200 with a scrap of error page, and reading that as an article buries
+      // the real problem under "no body found" - the most common silent
+      // failure on Korean institution sites. Judged on the text it carries,
+      // not on its size: a short page can still be a real one.
+      const page = new TextDecoder().decode(buf.subarray(0, 4000));
+      const words = page.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ").trim();
+      const complains = /로그인|세션|잘못된 접근|권한|만료|오류|error|expired|invalid/i.test(words);
+      if (words.length < 150 || (complains && words.length < 400)) {
+        throw new NaverError(
+          "LOGIN_REQUIRED",
+          "다운로드 주소가 파일 대신 짧은 오류 페이지를 돌려줬습니다. " +
+            "이 서버는 게시글을 먼저 연 세션에서만 첨부파일을 내주는 방식입니다. " +
+            "read_article 로 게시글을 먼저 열고, 거기 나온 다른 첨부파일 주소를 시도하세요.",
+          { url, bytes: buf.byteLength, sample: words.slice(0, 120) }
+        );
+      }
       kind = "html";
     }
   }
 
   switch (kind) {
-    case "pdf":   return { type: "text", ...(await readPdf(url, buf)) };
-    case "hwpx":  return { type: "text", ...(await readHwpxBytes(buf, url)) };
+    case "pdf":   return { type: "text", filename, ...(await readPdf(url, buf)) };
+    case "hwpx":  return { type: "text", filename, ...(await readHwpxBytes(buf, url)) };
     case "hwp":   return rejectHwp(url);
-    case "image": return { type: "image", ...readImage(buf, contentType, url) };
+    case "image": return { type: "image", filename, ...readImage(buf, contentType, url) };
     case "html":  return { type: "html" };
     default:
       throw new NaverError(

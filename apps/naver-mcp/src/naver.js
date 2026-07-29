@@ -522,28 +522,70 @@ const FILE_WORD =
 export function findDownloadEndpoints(html) {
   const found = [];
   const seen = new Set();
-  const re = /["'`]([^"'`\s<>]*?(?:file|atch|down)[^"'`\s<>]*?\.(?:do|jsp|php|es|nx|act))["'`]/gi;
+  // The path is usually written as a prefix with the query already started -
+  // location.href = "/boardCnts/fileDown.do?fileSeq=" + seq - so the match
+  // ends at the extension rather than at the closing quote. That prefix also
+  // names the parameter, which is worth far more than guessing at it.
+  const re =
+    /["'`]([^"'`\s<>]*?(?:file|atch|down|bbs)[^"'`\s<>?]*?\.(?:do|jsp|php|es|nx|act))(\?[A-Za-z_]\w*=)?/gi;
   let m;
   while ((m = re.exec(html)) !== null) {
     const path = m[1];
     if (!/down|fms|atch/i.test(path)) continue;
     if (seen.has(path)) continue;
     seen.add(path);
-    found.push(path);
+    found.push({ path, param: m[2] ? m[2].slice(1, -1) : null });
     if (found.length >= 6) break;
   }
   return found;
 }
 
 /**
+ * Parameter names that real download endpoints use, paired with what they mean.
+ *
+ * These are not invented. Each comes from a shipping system: the government
+ * standard framework takes (atchFileId, fileSn); 평가원 and the boards that
+ * share its CMS take a single opaque fileSeq; the downloadBbsFile family takes
+ * atchmnflNo. A reader that only knows one of them fails on the other two, and
+ * 수능 기출 lives behind the one that was missing.
+ */
+const PARAM_SETS = [
+  { id: "atchFileId", sn: "fileSn" },   // eGovFrame /cmm/fms/FileDown.do
+  { id: "fileSeq", sn: null },          // boardCnts - 평가원, 교육청, 학교
+  { id: "atchmnflNo", sn: null },       // downloadBbsFile.do - 지자체, 대학
+  { id: "fileId", sn: "fileSn" },
+  { id: "fileNo", sn: null },
+  { id: "fileIdx", sn: null },
+];
+
+/**
  * Turn a script handler into the address it would have fetched.
  *
- * The arguments are what matters: a file id and usually a sequence number.
- * Which parameter names to pair them with depends on the framework, so each
- * plausible pairing is offered rather than one being guessed at.
+ * The arguments carry a file id and, in some systems, a sequence number.
+ * Which parameter name goes with which endpoint varies by system, so every
+ * plausible pairing is offered and the fetch settles it - one extra request
+ * costs far less than the document staying out of reach.
  */
-function fromHandler(call, endpoints, pageUrl) {
-  const fn = /([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/.exec(call);
+/**
+ * The endpoint a named function actually uses.
+ *
+ * Pages contain several download-looking addresses, and picking whichever
+ * appears first pairs a handler with somebody else's endpoint - which is what
+ * happened: a call to fn_egov_downFile was rebuilt against a /boardDownload.es
+ * link that merely sat higher on the page. The function's own body says which
+ * address it opens, so read it from there and only fall back to the page-wide
+ * list when the definition is not in the HTML.
+ */
+function endpointForFunction(html, name) {
+  const at = html.search(new RegExp(`function\\s+${name.replace(/[.$]/g, "\\$&")}\\s*\\(`));
+  if (at < 0) return null;
+  const body = html.slice(at, at + 900);
+  const found = findDownloadEndpoints(body);
+  return found.length ? found[0] : null;
+}
+
+function fromHandler(call, endpoints, pageUrl, html = "") {
+  const fn = /([A-Za-z_$][\w$.]*)\s*\(([^)]*)\)/.exec(call);
   if (!fn) return [];
 
   const name = fn[1];
@@ -554,27 +596,47 @@ function fromHandler(call, endpoints, pageUrl) {
     .filter((a) => a !== "" && a !== undefined);
   if (!args.length) return [];
 
-  // The id is the argument that looks like one; the rest are sequence numbers.
-  const id = args.find((a) => /^[A-Za-z_]*\d{3,}/.test(a)) ?? args[0];
+  // The id is the long, opaque argument; anything short and numeric beside it
+  // is a sequence number. A single-argument call has no sequence at all.
+  const id = args.find((a) => a.length >= 6) ?? args[0];
   const rest = args.filter((a) => a !== id);
-  const sn = rest.find((a) => /^\d{1,3}$/.test(a)) ?? "0";
+  const sn = rest.find((a) => /^\d{1,3}$/.test(a));
 
-  const params = /^FILE_/i.test(id)
-    ? [`atchFileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`]
-    : [
-        `atchFileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`,
-        `fileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`,
-      ];
+  // The called function's own definition beats anything found elsewhere.
+  const own = html ? endpointForFunction(html, name) : null;
+  const ordered = own
+    ? [own, ...endpoints.filter((e) => e.path !== own.path)]
+    : endpoints;
 
   const out = [];
-  for (const endpoint of endpoints.slice(0, 3)) {
-    for (const q of params) {
-      try {
-        out.push(new URL(`${endpoint}${endpoint.includes("?") ? "&" : "?"}${q}`, pageUrl).href);
-      } catch {
-        /* an endpoint we cannot resolve is not worth reporting */
+  const seen = new Set();
+  const push = (endpoint, query) => {
+    try {
+      const u = new URL(`${endpoint}${endpoint.includes("?") ? "&" : "?"}${query}`, pageUrl).href;
+      if (!seen.has(u)) {
+        seen.add(u);
+        out.push(u);
       }
+    } catch {
+      /* an endpoint that will not resolve is not worth reporting */
     }
+  };
+
+  for (const { path: endpoint, param } of ordered.slice(0, 3)) {
+    // If the page wrote the parameter name into the address itself, use it.
+    // Everything else here is a guess; this is not.
+    const ranked = param
+      ? [{ id: param, sn: PARAM_SETS.find((p) => p.id === param)?.sn ?? null }, ...PARAM_SETS]
+      : PARAM_SETS;
+    for (const p of ranked) {
+      const q =
+        p.sn && sn !== undefined
+          ? `${p.id}=${encodeURIComponent(id)}&${p.sn}=${encodeURIComponent(sn)}`
+          : `${p.id}=${encodeURIComponent(id)}`;
+      push(endpoint, q);
+      if (out.length >= 6) break;
+    }
+    if (out.length >= 6) break;
   }
   return out;
 }
@@ -623,14 +685,25 @@ export function extractAttachments(html, pageUrl) {
     if (out.length >= 25) break;
 
     const a = readAnchor(m[1], m[2]);
-    const label = htmlToText(a.download || a.text || a.title || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const href = decodeAllEntities(a.href || "").trim();
+    // The anchor's text is often just an icon, and then the filename is in
+    // title= or the image's alt=. Taking the first non-empty of these in turn
+    // matters: falling back only when the text attribute is missing, rather
+    // than when it renders to nothing, loses the name entirely.
+    const imgAlt = (/<img\b[^>]*\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(a.text) || [])
+      .slice(1)
+      .find(Boolean);
+    const label = [a.download, htmlToText(a.text || ""), a.title, imgAlt]
+      .map((v) => (v || "").replace(/\s+/g, " ").trim())
+      .find((v) => v.length > 0) || "";
+    // JSP output routinely breaks a long href across lines, so the raw value
+    // arrives with newlines and tabs inside it. Left in, the address is not
+    // fetchable at all.
+    const href = decodeAllEntities((a.href || "").replace(/\s+/g, "")).trim();
     const handler = a.onclick || (/^javascript:/i.test(href) ? href.replace(/^javascript:/i, "") : "");
 
     // 1. A filename in the label, which is written to be read by a person.
-    const labelIsFile = DOC_EXT.test(label) || DOC_EXT.test(a.download || "") || DOC_EXT.test(a.title || "");
+    const named = [label, a.download, a.title, imgAlt].find((v) => v && DOC_EXT.test(v));
+    const labelIsFile = Boolean(named);
     // 2. The page filed this anchor under attachments.
     const regional = inFileRegion(m.index);
     // 4. The address itself.
@@ -638,10 +711,13 @@ export function extractAttachments(html, pageUrl) {
 
     if (handler && (labelIsFile || regional || FILE_WORD.test(handler))) {
       // 3. Rebuild what the handler would have fetched.
-      const guesses = fromHandler(handler, endpoints, pageUrl);
-      for (const g of guesses.slice(0, 2)) add(g, label || "첨부파일", "script handler");
-      if (!guesses.length && label) {
-        out.push({ url: null, label: label.slice(0, 90), why: "handler", handler: handler.slice(0, 120) });
+      const shown = named || label || "첨부파일";
+      const guesses = fromHandler(handler, endpoints, pageUrl, html);
+      for (const g of guesses.slice(0, 3)) add(g, shown, "script handler");
+      if (!guesses.length) {
+        // No endpoint to rebuild against. Reporting the call is still better
+        // than dropping it - it tells the reader a document is there.
+        out.push({ url: null, label: shown.slice(0, 90), why: "handler", handler: handler.slice(0, 120) });
       }
       continue;
     }
@@ -650,7 +726,11 @@ export function extractAttachments(html, pageUrl) {
     if (!labelIsFile && !regional && !hrefIsFile) continue;
 
     try {
-      add(new URL(href, pageUrl).href, label || "첨부파일", labelIsFile ? "label" : regional ? "region" : "address");
+      add(
+        new URL(href, pageUrl).href,
+        named || label || "첨부파일",
+        labelIsFile ? "label" : regional ? "region" : "address"
+      );
     } catch {
       /* not a resolvable address */
     }
