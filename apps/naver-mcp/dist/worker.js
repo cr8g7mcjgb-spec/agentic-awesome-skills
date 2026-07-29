@@ -776,7 +776,9 @@ async function naverBlogSearch({ query, count = 10, sort = "sim" }) {
     throw new NaverError("BAD_INPUT", "query is required");
   }
   const want = clampCount(count);
-  const sortParam = sort === "date" ? "&nso=so%3Add%2Cp%3Aall" : "";
+  // Naver's date sort needs the area term too. Without "a:all" it widens the
+  // match instead of just reordering, and unrelated recent posts come back.
+  const sortParam = sort === "date" ? "&nso=so%3Add%2Cp%3Aall%2Ca%3Aall" : "";
   const src = urlSource(BLOG_PATTERN, pairKey);
   const seen = new Map();
 

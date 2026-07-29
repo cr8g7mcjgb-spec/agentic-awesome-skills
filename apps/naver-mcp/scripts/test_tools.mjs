@@ -98,6 +98,28 @@ const run = async () => {
     return out;
   });
 
+  // Date sort must reorder the same matches, not widen them. It was returning
+  // recent posts about air conditioners and wedding halls for a cafe-interior
+  // query, so assert the results still relate to what was asked.
+  await step("naver_blog_search(sort=date) stays on topic", async () => {
+    const q = "10평 카페 인테리어";
+    const out = await naverBlogSearch({ query: q, count: 8, sort: "date" });
+    const titles = [...out.matchAll(/^\s*\d+\.\s+(.+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((t) => t !== "(제목 미확인)");
+    if (titles.length < 4) throw new Error(`only ${titles.length} titled results`);
+
+    const tokens = q.split(/\s+/).filter((t) => t.length >= 2);
+    const onTopic = titles.filter((t) => tokens.some((k) => t.includes(k)));
+    const ratio = onTopic.length / titles.length;
+    console.log(`--> on-topic ${onTopic.length}/${titles.length}`);
+    for (const t of titles) {
+      console.log(`    ${tokens.some((k) => t.includes(k)) ? "  ok" : "OFF "} ${t.slice(0, 52)}`);
+    }
+    if (ratio < 0.6) throw new Error(`only ${Math.round(ratio * 100)}% of date-sorted titles relate to "${q}"`);
+    return out;
+  });
+
   // 2. news
   let newsUrl = null;
   await step("naver_news_search('금리', 5)", async () => {
