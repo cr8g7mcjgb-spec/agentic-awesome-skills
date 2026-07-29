@@ -1074,23 +1074,132 @@ async function extractPdfText(buf) {
   };
 }
 
+// src/office.js
+function unxml(s) {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d))).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&amp;/g, "&");
+}
+function textFrom(xml, textTag, breakTag) {
+  const re = new RegExp(`<${textTag}\\b[^>]*>([\\s\\S]*?)</${textTag}>|</${breakTag}>`, "g");
+  const out = [];
+  for (const m of xml.matchAll(re)) out.push(m[1] === void 0 ? "\n" : unxml(m[1]));
+  return out.join("");
+}
+var FAMILIES = [
+  {
+    kind: "HWPX",
+    match: /^Contents\/section\d*\.xml$/i,
+    read: (xml) => textFrom(xml, "hp:t", "hp:p")
+  },
+  {
+    kind: "DOCX",
+    // Headers and footers carry the document number and the issuing office,
+    // which is often the only place a notice says who issued it.
+    match: /^word\/(?:document|header\d*|footer\d*)\.xml$/i,
+    read: (xml) => textFrom(xml, "w:t", "w:p")
+  },
+  {
+    kind: "PPTX",
+    match: /^ppt\/(?:slides\/slide\d+|notesSlides\/notesSlide\d+)\.xml$/i,
+    read: (xml) => textFrom(xml, "a:t", "a:p")
+  },
+  {
+    kind: "ODT",
+    match: /^content\.xml$/i,
+    read: (xml) => textFrom(xml, "text:p", "text:p")
+  }
+];
+function readSheets(entries, decode) {
+  const shared = [];
+  const sharedPart = Object.keys(entries).find((n) => /^xl\/sharedStrings\.xml$/i.test(n));
+  if (sharedPart) {
+    const xml = decode(entries[sharedPart]);
+    for (const si of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) {
+      shared.push(
+        [...si[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((t) => unxml(t[1])).join("")
+      );
+    }
+  }
+  const sheets = Object.keys(entries).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(n)).sort((a, b) => a.localeCompare(b, void 0, { numeric: true }));
+  const out = [];
+  for (const name of sheets) {
+    const xml = decode(entries[name]);
+    for (const row of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+      const cells = [];
+      for (const c of row[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+        const type = (/\bt="([^"]+)"/.exec(c[1]) || [])[1];
+        if (type === "inlineStr") {
+          cells.push([...c[2].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((t) => unxml(t[1])).join(""));
+          continue;
+        }
+        const v = (/<v\b[^>]*>([\s\S]*?)<\/v>/.exec(c[2]) || [])[1];
+        if (v === void 0) {
+          cells.push("");
+          continue;
+        }
+        cells.push(type === "s" ? shared[Number(v)] ?? "" : unxml(v));
+      }
+      if (cells.some((v) => v !== "")) out.push(cells.join("	"));
+    }
+    out.push("");
+  }
+  return out.join("\n");
+}
+function readZipDocument(entries, decode) {
+  const names = Object.keys(entries);
+  if (names.some((n) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(n))) {
+    const text = readSheets(entries, decode).trim();
+    return { text, how: "xlsx", parts: names.filter((n) => /worksheets\/sheet/i.test(n)).length };
+  }
+  for (const family of FAMILIES) {
+    const parts = names.filter((n) => family.match.test(n)).sort(
+      (a, b) => a.localeCompare(b, void 0, { numeric: true })
+    );
+    if (!parts.length) continue;
+    const pieces = [];
+    for (const name of parts) {
+      pieces.push(family.read(decode(entries[name])));
+      pieces.push("\n");
+    }
+    const text = pieces.join("").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text, how: family.kind.toLowerCase(), parts: parts.length };
+  }
+  return null;
+}
+function googleExport(url) {
+  const m = /^https?:\/\/docs\.google\.com\/(document|spreadsheets|presentation)\/d\/([A-Za-z0-9_-]{20,})/.exec(url);
+  if (!m) return null;
+  const [, kind, id] = m;
+  const gid = (/[?#&]gid=(\d+)/.exec(url) || [])[1];
+  if (kind === "spreadsheets") {
+    return {
+      url: `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${gid ? `&gid=${gid}` : ""}`,
+      how: "google-sheets"
+    };
+  }
+  return {
+    url: `https://docs.google.com/${kind}/d/${id}/export?format=txt`,
+    how: kind === "document" ? "google-docs" : "google-slides"
+  };
+}
+
 // src/files.js
 var MOBILE_UA2 = "Mozilla/5.0 (Linux; Android 14; SM-S928N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36";
 var MAX_BYTES = 12 * 1024 * 1024;
 var MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 var RAW_ROUTE_LIMIT = 6 * 1024 * 1024;
-var EXT = /\.(pdf|hwpx?|jpe?g|png|gif|webp|bmp)(?:$|[?#])/i;
+var EXT = /\.(pdf|hwpx?|docx|xlsx|pptx|odt|ods|odp|jpe?g|png|gif|webp|bmp|tiff?)(?:$|[?#])/i;
 function detectKind(url, contentType = "") {
   const ct = contentType.toLowerCase();
   if (ct.includes("application/pdf")) return "pdf";
   if (ct.includes("hwpml") || ct.includes("x-hwp")) return "hwp";
+  if (ct.includes("openxmlformats") || ct.includes("opendocument") || ct.includes("hwp+zip")) return "zip";
   if (ct.startsWith("image/")) return "image";
   const m = String(url).match(EXT);
   if (!m) return null;
   const ext = m[1].toLowerCase();
   if (ext === "pdf") return "pdf";
-  if (ext === "hwpx") return "hwpx";
   if (ext === "hwp") return "hwp";
+  if (/^(?:hwpx|docx|xlsx|pptx|odt|ods|odp)$/.test(ext)) return "zip";
   return "image";
 }
 async function fetchBinary(url, referer, { maxBody = MAX_BYTES } = {}) {
@@ -1156,36 +1265,34 @@ async function inflateRaw(bytes) {
   const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
-async function readHwpxBytes(buf, url) {
-  const files = unzipEntries(buf);
-  const sections = Object.keys(files).filter((n) => /Contents\/section\d*\.xml$/i.test(n)).sort();
-  if (!sections.length) {
+async function readZipped(buf, url) {
+  const raw = unzipEntries(buf);
+  const names = Object.keys(raw);
+  if (!names.length) {
+    throw new NaverError("PARSE_FAILED", "\uC555\uCD95 \uD30C\uC77C\uC744 \uC5F4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.", { url });
+  }
+  const entries = {};
+  for (const name of names) {
+    if (!/\.(?:xml|rels)$/i.test(name)) continue;
+    const e = raw[name];
+    try {
+      entries[name] = e.method === 8 ? await inflateRaw(e.data) : e.data;
+    } catch {
+    }
+  }
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  const doc = readZipDocument(entries, decode);
+  if (!doc) {
     throw new NaverError(
-      "PARSE_FAILED",
-      "HWPX \uC548\uC5D0\uC11C \uBCF8\uBB38 \uD30C\uC77C(Contents/section*.xml)\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
-      { url, entries: Object.keys(files).slice(0, 12) }
+      "UNSUPPORTED_FORMAT",
+      "\uC555\uCD95\uC740 \uC5F4\uC5C8\uC9C0\uB9CC \uC544\uB294 \uBB38\uC11C \uD615\uC2DD\uC774 \uC544\uB2D9\uB2C8\uB2E4 (HWPX/DOCX/XLSX/PPTX/ODT).",
+      { url, entries: names.slice(0, 12) }
     );
   }
-  const parts = [];
-  for (const name of sections) {
-    const raw = files[name];
-    let bytes;
-    try {
-      bytes = raw.method === 8 ? await inflateRaw(raw.data) : raw.data;
-    } catch (e) {
-      throw new NaverError("PARSE_FAILED", `HWPX \uC555\uCD95\uC744 \uD480\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${e.message}`, { url, name });
-    }
-    const xml = new TextDecoder().decode(bytes);
-    for (const m of xml.matchAll(/<hp:t[^>]*>([\s\S]*?)<\/hp:t>|<\/hp:p>/g)) {
-      parts.push(m[1] === void 0 ? "\n" : m[1]);
-    }
-    parts.push("\n");
+  if (doc.text.length < 20) {
+    throw new NaverError("PARSE_FAILED", `${doc.how.toUpperCase()}\uB97C \uC5F4\uC5C8\uC9C0\uB9CC \uBCF8\uBB38\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.`, { url });
   }
-  const text = htmlToText(parts.join("")).trim();
-  if (text.length < 20) {
-    throw new NaverError("PARSE_FAILED", "HWPX\uB97C \uC5F4\uC5C8\uC9C0\uB9CC \uBCF8\uBB38 \uD14D\uC2A4\uD2B8\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.", { url });
-  }
-  return { text, pages: sections.length, how: "hwpx-zip" };
+  return { text: doc.text, pages: doc.parts, how: doc.how };
 }
 function unzipEntries(buf) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -1347,6 +1454,25 @@ function readImage(buf, contentType, url) {
   return { base64: toBase64(buf), mimeType: mime, bytes: buf.byteLength };
 }
 async function readFile(url, { referer } = {}) {
+  const google = googleExport(url);
+  if (google) {
+    const resp = await fetch(google.url, { headers: { "User-Agent": MOBILE_UA2 }, redirect: "follow" });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new NaverError(
+        "LOGIN_REQUIRED",
+        "\uC774 \uAD6C\uAE00 \uBB38\uC11C\uB294 \uACF5\uAC1C \uC0C1\uD0DC\uAC00 \uC544\uB2D9\uB2C8\uB2E4. '\uB9C1\uD06C\uAC00 \uC788\uB294 \uBAA8\uB4E0 \uC0AC\uC6A9\uC790'\uB85C \uACF5\uC720\uB418\uC5B4\uC57C \uC77D\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+        { url }
+      );
+    }
+    if (!resp.ok) {
+      throw new NaverError("UPSTREAM", `\uAD6C\uAE00 \uBB38\uC11C\uB97C \uBC1B\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (HTTP ${resp.status}).`, { url });
+    }
+    const text = (await resp.text()).trim();
+    if (text.length < 10) {
+      throw new NaverError("PARSE_FAILED", "\uAD6C\uAE00 \uBB38\uC11C\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.", { url });
+    }
+    return { type: "text", text, pages: null, how: google.how, filename: "" };
+  }
   const { buf, contentType, declared, filename } = await fetchBinary(url, referer, {
     maxBody: RAW_ROUTE_LIMIT
   });
@@ -1368,7 +1494,7 @@ async function readFile(url, { referer } = {}) {
   }
   if (!kind) {
     if (buf[0] === 37 && buf[1] === 80 && buf[2] === 68 && buf[3] === 70) kind = "pdf";
-    else if (buf[0] === 80 && buf[1] === 75) kind = "hwpx";
+    else if (buf[0] === 80 && buf[1] === 75) kind = "zip";
     else if (buf[0] === 208 && buf[1] === 207) kind = "hwp";
     else if (buf[0] === 255 && buf[1] === 216) kind = "image";
     else if (buf[0] === 137 && buf[1] === 80) kind = "image";
@@ -1389,8 +1515,8 @@ async function readFile(url, { referer } = {}) {
   switch (kind) {
     case "pdf":
       return { type: "text", filename, ...await readPdf(url, buf) };
-    case "hwpx":
-      return { type: "text", filename, ...await readHwpxBytes(buf, url) };
+    case "zip":
+      return { type: "text", filename, ...await readZipped(buf, url) };
     case "hwp":
       return rejectHwp(url);
     case "image":

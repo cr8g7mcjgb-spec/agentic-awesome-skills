@@ -171,6 +171,59 @@ export function makeScannedPdf() {
   return out;
 }
 
+/** A DOCX: word/document.xml with <w:t> runs. */
+export function makeDocx(paragraphs = ["2026학년도 대학수학능력시험 시행 공고", "가. 시행 주체는 한국교육과정평가원이다."]) {
+  const body = paragraphs.map((p) => `<w:p><w:r><w:t>${p}</w:t></w:r></w:p>`).join("");
+  return zipStored({
+    "[Content_Types].xml": '<?xml version="1.0"?><Types/>',
+    "word/document.xml":
+      `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`,
+  });
+}
+
+/** A PPTX: one slide of <a:t> runs. */
+export function makePptx(lines = ["수능 출제 방향", "국어 영역은 독서와 문학에서 고르게 출제한다."]) {
+  const body = lines.map((t) => `<a:p><a:r><a:t>${t}</a:t></a:r></a:p>`).join("");
+  return zipStored({
+    "[Content_Types].xml": '<?xml version="1.0"?><Types/>',
+    "ppt/slides/slide1.xml":
+      `<?xml version="1.0" encoding="UTF-8"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>${body}</p:spTree></p:cSld></p:sld>`,
+  });
+}
+
+/** An XLSX: shared strings plus a sheet that references them by index. */
+export function makeXlsx(rows = [["과목", "응시자"], ["국어", "446,340"], ["수학", "441,832"]]) {
+  const strings = [];
+  const index = (v) => {
+    const at = strings.indexOf(v);
+    if (at >= 0) return at;
+    strings.push(v);
+    return strings.length - 1;
+  };
+  const body = rows
+    .map((cells, r) => {
+      const cs = cells
+        .map((v, c) =>
+          /^[\d,]+$/.test(v)
+            ? `<c r="${String.fromCharCode(65 + c)}${r + 1}"><v>${v.replace(/,/g, "")}</v></c>`
+            : `<c r="${String.fromCharCode(65 + c)}${r + 1}" t="s"><v>${index(v)}</v></c>`
+        )
+        .join("");
+      return `<row r="${r + 1}">${cs}</row>`;
+    })
+    .join("");
+
+  return zipStored({
+    "[Content_Types].xml": '<?xml version="1.0"?><Types/>',
+    "xl/sharedStrings.xml":
+      `<?xml version="1.0" encoding="UTF-8"?><sst count="${strings.length}">` +
+      strings.map((v) => `<si><t>${v}</t></si>`).join("") +
+      "</sst>",
+    "xl/worksheets/sheet1.xml":
+      `<?xml version="1.0" encoding="UTF-8"?><worksheet><sheetData>${body}</sheetData></worksheet>`,
+  });
+}
+
 /** A legacy .hwp: only the OLE compound-file signature is needed to identify it. */
 export function makeHwp() {
   const buf = new Uint8Array(512);

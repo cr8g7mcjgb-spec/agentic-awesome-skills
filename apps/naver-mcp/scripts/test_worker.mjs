@@ -8,7 +8,10 @@
  */
 
 import { createServer } from "node:http";
-import { makePdf, makeHwpx, makePng, makeHwp, makeScannedPdf, makeCidPdf } from "./fixtures.mjs";
+import {
+  makePdf, makeHwpx, makePng, makeHwp, makeScannedPdf, makeCidPdf,
+  makeDocx, makeXlsx, makePptx,
+} from "./fixtures.mjs";
 
 // Which build to drive. Both bundles are deployed from, so the minified one
 // has to pass the same checks as the readable one.
@@ -66,6 +69,9 @@ async function serveFixtures() {
     ), "application/octet-stream"],
     "/download?fileId=99": [makePdf(), "application/octet-stream"],
     "/exam.hwpx": [makeHwpx(), "application/hwp+zip"],
+    "/notice.docx": [makeDocx(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    "/stats.xlsx": [makeXlsx(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    "/deck.pptx": [makePptx(), "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
     "/scan.png": [makePng(), "image/png"],
     "/scan.pdf": [makeScannedPdf(), "application/pdf"],
     "/old.hwp": [makeHwp(), "application/x-hwp"],
@@ -275,6 +281,20 @@ const run = async () => {
       !hwpx.isError && hwpxText.includes("수능 국어 영역"), hwpxText.split("\n").pop().slice(0, 30));
     check("HWPX keeps paragraphs apart",
       !hwpxText.includes("영역다음"), hwpxText.replace(/\n/g, "|").slice(-40));
+
+    // Every zipped document format goes through the same reader. Supporting
+    // one of them and refusing the other three was never a real limit.
+    for (const [path, want, how] of [
+      ["notice.docx", "한국교육과정평가원이다", "docx"],
+      ["stats.xlsx", "446340", "xlsx"],
+      ["deck.pptx", "독서와 문학", "pptx"],
+    ]) {
+      const doc = await readFile(`${base}/${path}`);
+      const text = doc.content?.[0]?.text || "";
+      check(`${how.toUpperCase()} is read`,
+        !doc.isError && text.includes(want) && text.includes(how),
+        text.split("\n").pop().slice(0, 40));
+    }
 
     const img = await readFile(`${base}/scan.png`);
     const block = img.content?.find((c) => c.type === "image");

@@ -23,6 +23,7 @@
 
 import { NaverError, htmlToText } from "./naver.js";
 import { extractPdfText } from "./pdf.js";
+import { readZipDocument, googleExport } from "./office.js";
 
 export const MOBILE_UA =
   "Mozilla/5.0 (Linux; Android 14; SM-S928N) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -36,7 +37,7 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 // the URL straight to the reader, which fetches it itself.
 const RAW_ROUTE_LIMIT = 6 * 1024 * 1024;
 
-const EXT = /\.(pdf|hwpx?|jpe?g|png|gif|webp|bmp)(?:$|[?#])/i;
+const EXT = /\.(pdf|hwpx?|docx|xlsx|pptx|odt|ods|odp|jpe?g|png|gif|webp|bmp|tiff?)(?:$|[?#])/i;
 const HANGUL = /[가-힣]/g;
 
 /** What a URL and its response headers say the file is. */
@@ -44,14 +45,15 @@ export function detectKind(url, contentType = "") {
   const ct = contentType.toLowerCase();
   if (ct.includes("application/pdf")) return "pdf";
   if (ct.includes("hwpml") || ct.includes("x-hwp")) return "hwp";
+  if (ct.includes("openxmlformats") || ct.includes("opendocument") || ct.includes("hwp+zip")) return "zip";
   if (ct.startsWith("image/")) return "image";
 
   const m = String(url).match(EXT);
   if (!m) return null;
   const ext = m[1].toLowerCase();
   if (ext === "pdf") return "pdf";
-  if (ext === "hwpx") return "hwpx";
-  if (ext === "hwp") return "hwp";
+  if (ext === "hwp") return "hwp";                       // legacy binary, refused
+  if (/^(?:hwpx|docx|xlsx|pptx|odt|ods|odp)$/.test(ext)) return "zip";
   return "image";
 }
 
@@ -146,44 +148,39 @@ async function inflateRaw(bytes) {
  * headers directly - the format is a handful of little-endian fields - and let
  * DecompressionStream do the only hard part.
  */
-export async function readHwpxBytes(buf, url) {
-  const files = unzipEntries(buf);
-  const sections = Object.keys(files)
-    .filter((n) => /Contents\/section\d*\.xml$/i.test(n))
-    .sort();
+export async function readZipped(buf, url) {
+  const raw = unzipEntries(buf);
+  const names = Object.keys(raw);
+  if (!names.length) {
+    throw new NaverError("PARSE_FAILED", "압축 파일을 열지 못했습니다.", { url });
+  }
 
-  if (!sections.length) {
+  // Only the XML parts are needed; inflating the images inside a document
+  // would cost time and memory for nothing.
+  const entries = {};
+  for (const name of names) {
+    if (!/\.(?:xml|rels)$/i.test(name)) continue;
+    const e = raw[name];
+    try {
+      entries[name] = e.method === 8 ? await inflateRaw(e.data) : e.data;
+    } catch {
+      /* one unreadable part is not a reason to abandon the document */
+    }
+  }
+
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  const doc = readZipDocument(entries, decode);
+  if (!doc) {
     throw new NaverError(
-      "PARSE_FAILED",
-      "HWPX 안에서 본문 파일(Contents/section*.xml)을 찾지 못했습니다.",
-      { url, entries: Object.keys(files).slice(0, 12) }
+      "UNSUPPORTED_FORMAT",
+      "압축은 열었지만 아는 문서 형식이 아닙니다 (HWPX/DOCX/XLSX/PPTX/ODT).",
+      { url, entries: names.slice(0, 12) }
     );
   }
-
-  const parts = [];
-  for (const name of sections) {
-    const raw = files[name];
-    let bytes;
-    try {
-      bytes = raw.method === 8 ? await inflateRaw(raw.data) : raw.data;
-    } catch (e) {
-      throw new NaverError("PARSE_FAILED", `HWPX 압축을 풀지 못했습니다: ${e.message}`, { url, name });
-    }
-    const xml = new TextDecoder().decode(bytes);
-    // <hp:t> carries the runs of visible text; paragraphs end at </hp:p>.
-    // Both are matched in one pass so the line breaks land between the runs
-    // they separate instead of all collecting at the end.
-    for (const m of xml.matchAll(/<hp:t[^>]*>([\s\S]*?)<\/hp:t>|<\/hp:p>/g)) {
-      parts.push(m[1] === undefined ? "\n" : m[1]);
-    }
-    parts.push("\n");
+  if (doc.text.length < 20) {
+    throw new NaverError("PARSE_FAILED", `${doc.how.toUpperCase()}를 열었지만 본문이 비어 있습니다.`, { url });
   }
-
-  const text = htmlToText(parts.join("")).trim();
-  if (text.length < 20) {
-    throw new NaverError("PARSE_FAILED", "HWPX를 열었지만 본문 텍스트가 비어 있습니다.", { url });
-  }
-  return { text, pages: sections.length, how: "hwpx-zip" };
+  return { text: doc.text, pages: doc.parts, how: doc.how };
 }
 
 /**
@@ -436,6 +433,29 @@ export function readImage(buf, contentType, url) {
  * download links routinely end in `?fileId=` with no extension at all.
  */
 export async function readFile(url, { referer } = {}) {
+  // A Google document link serves a web application, not a file. Google
+  // publishes a keyless export for anything shared publicly, so the link is
+  // rewritten rather than refused.
+  const google = googleExport(url);
+  if (google) {
+    const resp = await fetch(google.url, { headers: { "User-Agent": MOBILE_UA }, redirect: "follow" });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new NaverError(
+        "LOGIN_REQUIRED",
+        "이 구글 문서는 공개 상태가 아닙니다. '링크가 있는 모든 사용자'로 공유되어야 읽을 수 있습니다.",
+        { url }
+      );
+    }
+    if (!resp.ok) {
+      throw new NaverError("UPSTREAM", `구글 문서를 받지 못했습니다 (HTTP ${resp.status}).`, { url });
+    }
+    const text = (await resp.text()).trim();
+    if (text.length < 10) {
+      throw new NaverError("PARSE_FAILED", "구글 문서가 비어 있습니다.", { url });
+    }
+    return { type: "text", text, pages: null, how: google.how, filename: "" };
+  }
+
   const { buf, contentType, declared, filename } = await fetchBinary(url, referer, {
     maxBody: RAW_ROUTE_LIMIT,
   });
@@ -462,7 +482,7 @@ export async function readFile(url, { referer } = {}) {
   // Sniff the magic bytes when neither the URL nor the headers committed.
   if (!kind) {
     if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) kind = "pdf";
-    else if (buf[0] === 0x50 && buf[1] === 0x4b) kind = "hwpx";      // zip container
+    else if (buf[0] === 0x50 && buf[1] === 0x4b) kind = "zip";       // hwpx/docx/xlsx/pptx
     else if (buf[0] === 0xd0 && buf[1] === 0xcf) kind = "hwp";       // OLE compound
     else if (buf[0] === 0xff && buf[1] === 0xd8) kind = "image";
     else if (buf[0] === 0x89 && buf[1] === 0x50) kind = "image";
@@ -493,7 +513,7 @@ export async function readFile(url, { referer } = {}) {
 
   switch (kind) {
     case "pdf":   return { type: "text", filename, ...(await readPdf(url, buf)) };
-    case "hwpx":  return { type: "text", filename, ...(await readHwpxBytes(buf, url)) };
+    case "zip":   return { type: "text", filename, ...(await readZipped(buf, url)) };
     case "hwp":   return rejectHwp(url);
     case "image": return { type: "image", filename, ...readImage(buf, contentType, url) };
     case "html":  return { type: "html" };
