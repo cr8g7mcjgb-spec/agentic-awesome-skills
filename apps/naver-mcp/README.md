@@ -78,59 +78,73 @@ Code sandbox, can reach Naver):
 Most Korean reference material — past exam papers, government reports, notices
 — is distributed as an attachment, not as HTML. `read_file` reads those, and
 `read_article` hands a file URL over automatically, so a link from search works
-whichever tool the model reaches for.
+whichever tool the model reaches for. A link with no extension is resolved by
+Content-Type, then extension, then magic bytes, and if it turns out to be a web
+page after all it goes back to the HTML reader instead of being refused.
 
-**No library is used for any of it.** That is not thrift for its own sake:
-`pdf.js` is 1.5 MB, and a Worker that large can no longer be pasted into the
-Cloudflare editor, which is this project's only deploy route. Each format uses
-something already present at the edge instead.
+**No library is used for any of it.** `pdf.js` is 1.5 MB, and a Worker that
+large can no longer be pasted into the Cloudflare editor, which is this
+project's only deploy route. Everything here uses what the runtime already has.
 
 | Format | How | Result |
 | --- | --- | --- |
-| HWPX | Local file headers walked by hand, inflated with the built-in `DecompressionStream` | Text |
-| PDF | Its own Flate streams first; `r.jina.ai` when those hold glyph ids rather than letters | Text |
+| PDF | Parsed in `src/pdf.js`, including the font tables that make Korean readable | Text |
+| HWPX | Central directory read by hand, inflated with the built-in `DecompressionStream` | Text |
 | Image | Handed over as an MCP **image block** — no extraction at all | The model sees the page |
-| Scanned PDF | Neither route finds text | `SCANNED_PDF` |
+| Scanned PDF | Pages of images with no text operators | `SCANNED_PDF` |
 | Legacy `.hwp` | Compound-binary, no small reader exists | `UNSUPPORTED_FORMAT` + how to convert |
 
-The format is decided by Content-Type, then extension, then magic bytes —
-Korean download links routinely look like `?fileId=1234` with no extension and
-`application/octet-stream` on the response.
+### Why the PDF reader is not a regex
 
-### Why PDF has two routes
+Pulling whatever sits inside `(...) Tj` reads English and returns noise for
+Korean. Korean documents embed a subset font and store text as glyph ids:
+`<0037 00A2>` means "the 55th and 162nd shape in this font", not any particular
+characters. Measured against real Korean PDFs found through Naver, that naive
+approach read 1 of 4 — and worse, the other 3 came back as a *successful* read
+of zero Korean characters, because "no Hangul" also describes an English page.
 
-Measured against real Korean PDFs discovered through Naver search
-(`scripts/probe_pdf.py`, run on a GitHub runner):
+The table that translates them ships inside the file: every such font carries a
+`/ToUnicode` CMap so that copy-and-paste works in a viewer. Reading it turns the
+same bytes into text with nothing to install and nobody to ask. Doing that needs
+real parsing:
 
-| Route | Korean PDFs read | Note |
-| --- | --- | --- |
-| `r.jina.ai` | 3 / 4 | 6,604 / 4,002 / 4,436 Hangul characters; the miss was an 8 MB file timing out |
-| PDF's own streams | 1 / 4 | Korean PDFs usually store glyph ids that need the file's ToUnicode map |
-| Control (English PDF) | pass | 40,795 characters — proves the route, says nothing about Hangul |
+- objects are found by scanning, not by trusting a cross-reference table that
+  goes stale the moment a file is edited
+- objects packed into a compressed `/ObjStm` are expanded — PDF 1.5 puts most
+  font dictionaries there, and without this a modern file appears to have no
+  fonts at all
+- each page's `/Resources /Font` is read, so `/F1` resolves to a font
+- the content stream is walked with a scanner rather than matched with a
+  pattern, because the same bytes mean different characters depending on which
+  `Tf` came before them
 
-So the local route runs first because it is free and instant, but its output is
-only trusted when the text came out as letters: clearly present Hangul, or none
-at all with clean Latin. Anything in between is glyph noise and goes to the
-reader. `r.jina.ai` needs no key and is already the HTML fallback — this is the
-same door, used for one more format.
+Fonts with no table fall back to UTF-8, then EUC-KR, then Latin-1 — in that
+order, because Latin-1 never fails, it just returns something unreadable.
 
-Images are handed to the model as images. OCR was ruled out rather than
-attempted: Korean language data alone runs to tens of megabytes, and a model
-that can see the page reads tables and layout that OCR would flatten.
+`r.jina.ai` — the keyless reader already used as an HTML fallback — remains
+behind all of that, for files whose fonts the document never explains.
+
+### How a bad read is caught
+
+A read is only accepted if bytes actually became characters. The signal is the
+count of show operations that consumed bytes and produced nothing: a real
+English page has none; a document whose fonts are never explained has almost
+nothing else. Above a quarter, the file goes to the fallback instead of
+returning silence dressed as success.
 
 Size caps: 12 MB per file, 4 MB per image, and PDFs over 6 MB skip the local
-route rather than be downloaded twice.
+route rather than being downloaded twice.
 
-**Bundle cost** — the whole Worker, with every format supported:
+**Bundle cost** — the whole Worker, every format supported:
 
 ```
-dist/worker.js      raw 70,202   gzip 18,983
-dist/worker.min.js  raw 49,871   gzip 15,855
+dist/worker.js      raw 85,565   gzip ~23,000
+dist/worker.min.js  raw 58,205   gzip ~19,000
                                  limit 3,145,728
 ```
 
 Small enough to keep deploying by pasting. `scripts/bundle.mjs` fails the build
-if that ever stops being true.
+if that stops being true.
 
 ## Deploying
 
