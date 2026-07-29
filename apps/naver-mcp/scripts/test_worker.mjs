@@ -46,7 +46,15 @@ async function serveFixtures() {
       "<li><a href='/boardDownload.es?bid=0001&list_no=123&seq=1'>국어영역 문제지</a></li>" +
       "<li><a href='/upload/answer.pdf'>정답표</a></li>" +
       "<li><a href='/board/list.do?menu=3'>목록으로</a></li>" +
-      "</ul></body></html>"
+      "</ul>" +
+      // The shape most Korean public bodies actually use: a script call with
+      // an id, no filename anywhere in the address.
+      "<script>function fn_egov_downFile(atchFileId, fileSn){" +
+      "var frm=document.frm; frm.action='/cmm/fms/FileDown.do'; frm.submit();}</script>" +
+      "<dl class='file'><dt>첨부파일</dt><dd>" +
+      "<a href=\"javascript:fn_egov_downFile('FILE_000000000012345','0')\">2026학년도 국어영역 문제지.hwp</a>" +
+      "</dd></dl>" +
+      "</body></html>"
     ), "text/html; charset=utf-8"],
     "/page": [Buffer.from(
       "<!doctype html><html><head><title>공고문</title></head><body><article>" +
@@ -303,6 +311,12 @@ const run = async () => {
       noticeText.split("첨부파일").pop()?.slice(0, 60).replace(/\n/g, " ") || "");
     check("navigation links are not offered as attachments",
       !noticeText.includes("list.do"));
+    // The standard government framework hides the address inside a script
+    // call. Skipping javascript: links, as this reader used to, misses the
+    // single most common way a Korean institution publishes a document.
+    check("a script-driven download is rebuilt into a real address",
+      noticeText.includes("/cmm/fms/FileDown.do?atchFileId=FILE_000000000012345&fileSn=0"),
+      noticeText.split("첨부파일").pop()?.slice(0, 70).replace(/\n/g, " ") || "");
 
     const missing = await readFile(`${base}/gone.pdf`);
     check("a missing file is NOT_FOUND, not a parse failure",

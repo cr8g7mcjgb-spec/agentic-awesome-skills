@@ -123,7 +123,7 @@ const ENTITIES = {
 };
 
 /** Decode every entity form in the correct order, "&amp;" last. */
-function decodeAllEntities(s) {
+export function decodeAllEntities(s) {
   let out = decodeNumericEntities(String(s || ""));
   for (const [k, v] of Object.entries(ENTITIES)) out = out.split(k).join(v);
   return out.split("&amp;").join("&");
@@ -476,44 +476,186 @@ const SHELL_MARKERS = [/지도 검색/, /서제스트/, /본문 바로가기/, /
 
 /** Read any URL: fetch it directly, then let the reader proxy try. */
 /**
- * Collect the attachment links on a page.
+ * Find the attachments on a page, whatever shape the site gives them.
  *
- * Korean public bodies rarely publish a PDF at a searchable address. The
- * search result is a notice page, and the document itself hangs off it as an
- * attachment - very often behind a link with no extension at all, like
- * `?fileSn=0&fileId=1234`. A reader that returns only prose therefore ends the
- * trail exactly where the useful part starts, so the links come back too.
+ * Matching on "the address contains the word file or download" is a guess, and
+ * it fails on the pattern most Korean public bodies actually use: the standard
+ * government framework renders an attachment as
+ *
+ *     <a href="javascript:fn_egov_downFile('FILE_00000000012345','0')">국어.hwp</a>
+ *
+ * where the address carries no filename, no extension, and no clue - and a
+ * reader that skips `javascript:` links, as this one did, sees nothing at all.
+ *
+ * So the address is the last thing consulted, not the first. In order:
+ *
+ *   1. the label - `2026학년도 국어영역.hwp` is a filename no matter what the
+ *      link does, and it is written for a human to read
+ *   2. the surroundings - an anchor inside a box the page itself marks as
+ *      첨부파일 / attach / file is an attachment by the page's own account
+ *   3. the handler - a script call carrying an id is rebuilt into the address
+ *      the page's own form would have posted to
+ *   4. the address - an extension or a download-ish word, as before
+ *
+ * Anything found is a candidate, not a verdict. `read_file` fetches it and the
+ * magic bytes decide; a wrong candidate costs one request, while a missed one
+ * costs the document that was the whole point of opening the page.
  */
+
+// Extensions worth chasing. Not an exhaustive list of file types - a list of
+// what Korean institutions publish documents as.
+const DOC_EXT = /\.(?:pdf|hwpx?|docx?|xlsx?|pptx?|zip|txt|csv)(?=$|[?#"'\s])/i;
+
+// Words that mark a link, or the box around it, as carrying a file. Korean
+// included, because plenty of sites label the column 첨부 and nothing else.
+const FILE_WORD =
+  /file|attach|atch|download|down_?load|fdown|streamdocs|synap|첨부|다운로드|내려받기/i;
+
+/**
+ * Endpoints the page reveals about itself.
+ *
+ * The standard framework defines its download function inline, and that
+ * definition contains the address it posts to - `/cmm/fms/FileDown.do` on one
+ * site, `/common/fileDown.do` on the next. Reading it from the page beats
+ * hard-coding a list that is wrong for the site you are actually on.
+ */
+export function findDownloadEndpoints(html) {
+  const found = [];
+  const seen = new Set();
+  const re = /["'`]([^"'`\s<>]*?(?:file|atch|down)[^"'`\s<>]*?\.(?:do|jsp|php|es|nx|act))["'`]/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const path = m[1];
+    if (!/down|fms|atch/i.test(path)) continue;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    found.push(path);
+    if (found.length >= 6) break;
+  }
+  return found;
+}
+
+/**
+ * Turn a script handler into the address it would have fetched.
+ *
+ * The arguments are what matters: a file id and usually a sequence number.
+ * Which parameter names to pair them with depends on the framework, so each
+ * plausible pairing is offered rather than one being guessed at.
+ */
+function fromHandler(call, endpoints, pageUrl) {
+  const fn = /([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/.exec(call);
+  if (!fn) return [];
+
+  const name = fn[1];
+  if (!FILE_WORD.test(name)) return [];
+
+  const args = [...fn[2].matchAll(/['"]([^'"]*)['"]|(\d+)/g)]
+    .map((a) => a[1] ?? a[2])
+    .filter((a) => a !== "" && a !== undefined);
+  if (!args.length) return [];
+
+  // The id is the argument that looks like one; the rest are sequence numbers.
+  const id = args.find((a) => /^[A-Za-z_]*\d{3,}/.test(a)) ?? args[0];
+  const rest = args.filter((a) => a !== id);
+  const sn = rest.find((a) => /^\d{1,3}$/.test(a)) ?? "0";
+
+  const params = /^FILE_/i.test(id)
+    ? [`atchFileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`]
+    : [
+        `atchFileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`,
+        `fileId=${encodeURIComponent(id)}&fileSn=${encodeURIComponent(sn)}`,
+      ];
+
+  const out = [];
+  for (const endpoint of endpoints.slice(0, 3)) {
+    for (const q of params) {
+      try {
+        out.push(new URL(`${endpoint}${endpoint.includes("?") ? "&" : "?"}${q}`, pageUrl).href);
+      } catch {
+        /* an endpoint we cannot resolve is not worth reporting */
+      }
+    }
+  }
+  return out;
+}
+
+/** Everything the page says about one anchor: its address, handler and label. */
+function readAnchor(tag, inner) {
+  const attr = (name) => {
+    const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+    return m ? (m[1] ?? m[2] ?? m[3] ?? "").trim() : "";
+  };
+  return {
+    href: attr("href"),
+    onclick: attr("onclick"),
+    title: attr("title"),
+    download: attr("download"),
+    text: inner,
+  };
+}
+
 export function extractAttachments(html, pageUrl) {
+  const endpoints = findDownloadEndpoints(html);
   const out = [];
   const seen = new Set();
 
-  // Korean government sites each invent their own download endpoint -
-  // boardDownload.es, cmm/fms/FileDown.do, fileDownload.do, streamdocs - so
-  // matching a fixed list of them misses most. Any link that says "down",
-  // "attach" or "file" is a candidate; read_file settles what it really is,
-  // and an extra candidate costs far less than a missed exam paper.
-  const looksLikeFile =
-    /\.(?:pdf|hwpx?|docx?|xlsx?|pptx?|zip)(?:$|[?#])|down(?:load)?|attach|atchfile|\bfms\b|streamdocs|getfile|filesn|fileid/i;
+  // Regions the page itself marks as holding files. An anchor inside one is an
+  // attachment on the page's own say-so, whatever its address looks like.
+  const fileRegions = [];
+  for (const m of html.matchAll(
+    /<(?:div|ul|dl|td|section|p)\b[^>]*(?:class|id)=["'][^"']*(?:file|attach|atch|첨부)[^"']*["'][\s\S]{0,4000}?<\/(?:div|ul|dl|td|section|p)>/gi
+  )) {
+    fileRegions.push([m.index, m.index + m[0].length]);
+    if (fileRegions.length >= 30) break;
+  }
+  // The end index is exclusive: an anchor starting exactly where the region
+  // ends is the next thing on the page, not the last thing inside it. Treating
+  // it as inside pulled the "목록" link in as an attachment.
+  const inFileRegion = (at) => fileRegions.some(([a, b]) => at >= a && at < b);
 
-  for (const m of html.matchAll(/<a\b[^>]*\bhref=["']([^"'>]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi)) {
-    const href = decodeAllEntities(m[1]).trim();
-    if (!href || /^(?:#|javascript:|mailto:)/i.test(href)) continue;
-    if (!looksLikeFile.test(href)) continue;
+  const add = (url, label, why) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    out.push({ url, label: label.slice(0, 90), why });
+  };
 
-    let abs;
-    try {
-      abs = new URL(href, pageUrl).href;
-    } catch {
+  for (const m of html.matchAll(/<a\b([^>]*)>([\s\S]{0,400}?)<\/a>/gi)) {
+    if (out.length >= 25) break;
+
+    const a = readAnchor(m[1], m[2]);
+    const label = htmlToText(a.download || a.text || a.title || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const href = decodeAllEntities(a.href || "").trim();
+    const handler = a.onclick || (/^javascript:/i.test(href) ? href.replace(/^javascript:/i, "") : "");
+
+    // 1. A filename in the label, which is written to be read by a person.
+    const labelIsFile = DOC_EXT.test(label) || DOC_EXT.test(a.download || "") || DOC_EXT.test(a.title || "");
+    // 2. The page filed this anchor under attachments.
+    const regional = inFileRegion(m.index);
+    // 4. The address itself.
+    const hrefIsFile = href && (DOC_EXT.test(href) || FILE_WORD.test(href));
+
+    if (handler && (labelIsFile || regional || FILE_WORD.test(handler))) {
+      // 3. Rebuild what the handler would have fetched.
+      const guesses = fromHandler(handler, endpoints, pageUrl);
+      for (const g of guesses.slice(0, 2)) add(g, label || "첨부파일", "script handler");
+      if (!guesses.length && label) {
+        out.push({ url: null, label: label.slice(0, 90), why: "handler", handler: handler.slice(0, 120) });
+      }
       continue;
     }
-    if (seen.has(abs)) continue;
-    seen.add(abs);
 
-    const label = htmlToText(m[2]).replace(/\s+/g, " ").trim();
-    out.push({ url: abs, label: label.slice(0, 80) });
-    if (out.length >= 20) break;
+    if (!href || /^(?:#|mailto:|tel:)/i.test(href)) continue;
+    if (!labelIsFile && !regional && !hrefIsFile) continue;
+
+    try {
+      add(new URL(href, pageUrl).href, label || "첨부파일", labelIsFile ? "label" : regional ? "region" : "address");
+    } catch {
+      /* not a resolvable address */
+    }
   }
+
   return out;
 }
 
