@@ -80,7 +80,16 @@ const local = readable.filter((r) => r.how === "pdf-local");
 console.log(`PDFs read with Korean text : ${readable.length}/${rows.length}`);
 console.log(`  ...without any outside service : ${local.length}`);
 for (const r of rows) {
-  console.log(`  ${String(r.how).padEnd(22)} ${r.hangul ?? "-"} hangul  ${r.url.slice(-52)}`);
+  // Chopping a fixed number of characters off the front leaves a stray ":"
+  // on shorter URLs and makes the column unreadable. Show the path instead.
+  let where = r.url;
+  try {
+    const u = new URL(r.url);
+    where = u.hostname + u.pathname;
+  } catch {
+    /* keep the raw string */
+  }
+  console.log(`  ${String(r.how).padEnd(14)} ${String(r.hangul ?? "-").padStart(6)} hangul  ${where}`);
 }
 
 // Reading nothing at all is the only outcome that should fail the build. A
