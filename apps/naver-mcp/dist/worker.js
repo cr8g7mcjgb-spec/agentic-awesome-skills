@@ -861,6 +861,7 @@ async function extractPdfText(buf) {
   const pages = [...objects.entries()].filter(([, o]) => /\/Type\s*\/Page\b/.test(o.dict));
   const pieces = [];
   let textOps = 0;
+  let emptyShows = 0;
   let imageXObjects = 0;
   let mappedFonts = 0;
   for (const [, page] of pages) {
@@ -905,7 +906,9 @@ async function extractPdfText(buf) {
       (operand) => {
         textOps++;
         const bytes = operand.kind === "hex" ? hexToBytes(operand.value) : literalToBytes(operand.value);
-        out.push(table ? decodeWithTable(bytes, table) : decodePlain(bytes));
+        const piece = table ? decodeWithTable(bytes, table) : decodePlain(bytes);
+        if (bytes.length && !piece.trim()) emptyShows++;
+        out.push(piece);
       },
       () => out.push("\n"),
       (name) => {
@@ -919,7 +922,16 @@ async function extractPdfText(buf) {
   const text = pieces.join("").replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n").trim();
   const hangul = (text.match(HANGUL) || []).length;
   const junk = (text.match(/[� --]/g) || []).length;
-  return { text, hangul, junk, textOps, imageXObjects, pages: pages.length, mappedFonts };
+  return {
+    text,
+    hangul,
+    junk,
+    textOps,
+    emptyShows,
+    imageXObjects,
+    pages: pages.length,
+    mappedFonts
+  };
 }
 
 // src/files.js
@@ -1096,11 +1108,12 @@ async function readPdf(url, buf) {
         );
       }
       const clean = local.junk < Math.max(8, local.text.length / 40);
-      const readable = clean && local.text.length >= 20 && (local.hangul >= 20 || local.hangul === 0);
+      const mostlyEmpty = local.textOps > 0 && local.emptyShows > local.textOps / 4;
+      const readable = clean && !mostlyEmpty && local.text.length >= 20 && (local.hangul >= 20 || local.hangul === 0);
       trace.push({
         route: "pdf-local",
         result: readable ? "ok" : "low-confidence",
-        message: `${local.hangul} hangul, ${local.junk} junk, ${local.pages} pages, ${local.mappedFonts} mapped fonts`
+        message: `${local.hangul} hangul, ${local.junk} junk, ${local.pages} pages, ${local.mappedFonts} mapped fonts, ${local.emptyShows}/${local.textOps} empty`
       });
       if (readable) return { text: local.text, pages: local.pages, how: "pdf-local" };
     } catch (e) {

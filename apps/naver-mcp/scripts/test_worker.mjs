@@ -36,6 +36,7 @@ async function serveFixtures() {
     "/korean.pdf": [makePdf(KOREAN_PASSAGE), "application/pdf"],
     "/compressed.pdf": [makePdf(KOREAN_PASSAGE, { compress: true }), "application/pdf"],
     "/glyphs.pdf": [makeCidPdf(KOREAN_PASSAGE), "application/pdf"],
+    "/notable.pdf": [makeCidPdf(KOREAN_PASSAGE, { withTable: false }), "application/pdf"],
     "/page": [Buffer.from(
       "<!doctype html><html><head><title>공고문</title></head><body><article>" +
       "<p>이 페이지는 첨부파일이 아니라 웹 문서입니다. 파일 도구에 넣어도 본문이 나와야 합니다. " +
@@ -226,6 +227,14 @@ const run = async () => {
     check("glyph-id Korean is decoded from the PDF's own table",
       !glyphs.isError && glyphText.includes(KOREAN_PASSAGE) && glyphText.includes("pdf-local"),
       glyphText.split("\n").pop().slice(0, 40));
+
+    // Same document with its translation table removed. Before this was
+    // measured, a file like it came back as a successful read of zero Korean
+    // characters - an empty answer wearing a success. It has to fail instead.
+    const noTable = await readFile(`${base}/notable.pdf`);
+    check("a PDF whose fonts cannot be decoded is not passed off as empty text",
+      noTable.isError === true,
+      (noTable.content?.[0]?.text || "").slice(0, 50).replace(/\n/g, " "));
 
     const hwpx = await readFile(`${base}/exam.hwpx`);
     const hwpxText = hwpx.content?.[0]?.text || "";

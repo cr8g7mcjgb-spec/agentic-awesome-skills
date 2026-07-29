@@ -281,14 +281,21 @@ export async function readPdf(url, buf) {
       // so a clean result is the normal case rather than the lucky one. What
       // the check still catches is a font carrying no map at all, where the
       // bytes cannot be named and come out as noise.
+      // A document is only read if the bytes actually turned into characters.
+      // Before the ToUnicode table was used, a Korean PDF came back with zero
+      // Hangul and was waved through as "an English document" - an empty
+      // answer presented as a good one. Counting the show operations that
+      // produced nothing tells those two cases apart.
       const clean = local.junk < Math.max(8, local.text.length / 40);
-      const readable = clean && local.text.length >= 20 && (local.hangul >= 20 || local.hangul === 0);
+      const mostlyEmpty = local.textOps > 0 && local.emptyShows > local.textOps / 4;
+      const readable =
+        clean && !mostlyEmpty && local.text.length >= 20 && (local.hangul >= 20 || local.hangul === 0);
       trace.push({
         route: "pdf-local",
         result: readable ? "ok" : "low-confidence",
         message:
           `${local.hangul} hangul, ${local.junk} junk, ${local.pages} pages, ` +
-          `${local.mappedFonts} mapped fonts`,
+          `${local.mappedFonts} mapped fonts, ${local.emptyShows}/${local.textOps} empty`,
       });
       if (readable) return { text: local.text, pages: local.pages, how: "pdf-local" };
     } catch (e) {

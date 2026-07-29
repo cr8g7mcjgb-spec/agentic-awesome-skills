@@ -466,6 +466,7 @@ export async function extractPdfText(buf) {
   const pages = [...objects.entries()].filter(([, o]) => /\/Type\s*\/Page\b/.test(o.dict));
   const pieces = [];
   let textOps = 0;
+  let emptyShows = 0;
   let imageXObjects = 0;
   let mappedFonts = 0;
 
@@ -516,7 +517,12 @@ export async function extractPdfText(buf) {
       (operand) => {
         textOps++;
         const bytes = operand.kind === "hex" ? hexToBytes(operand.value) : literalToBytes(operand.value);
-        out.push(table ? decodeWithTable(bytes, table) : decodePlain(bytes));
+        const piece = table ? decodeWithTable(bytes, table) : decodePlain(bytes);
+        // Bytes went in and nothing came out: a font whose codes this file
+        // never explains. Counting these is the difference between "this
+        // document is in English" and "its Korean was silently dropped".
+        if (bytes.length && !piece.trim()) emptyShows++;
+        out.push(piece);
       },
       () => out.push("\n"),
       (name) => {
@@ -533,5 +539,14 @@ export async function extractPdfText(buf) {
   const hangul = (text.match(HANGUL) || []).length;
   const junk = (text.match(/[� --]/g) || []).length;
 
-  return { text, hangul, junk, textOps, imageXObjects, pages: pages.length, mappedFonts };
+  return {
+    text,
+    hangul,
+    junk,
+    textOps,
+    emptyShows,
+    imageXObjects,
+    pages: pages.length,
+    mappedFonts,
+  };
 }
