@@ -471,7 +471,17 @@ export async function extractPdfText(buf) {
   let mappedFonts = 0;
 
   for (const [, page] of pages) {
-    const resources = dictValue(objects, page.dict, "Resources") || "";
+    // /Resources is an inheritable attribute: many producers declare it once
+    // on the /Pages node. A page that merely points at its parent would
+    // otherwise appear to have no fonts, and its text would be decoded blind.
+    let resources = "";
+    let node = page;
+    for (let hops = 0; node && hops < 8; hops++) {
+      resources = dictValue(objects, node.dict, "Resources") || "";
+      if (resources) break;
+      const parent = refIn(node.dict, "Parent");
+      node = parent === null ? null : objects.get(parent);
+    }
     const fontDict = dictValue(objects, resources, "Font") || "";
     const fonts = new Map();
     for (const f of fontDict.matchAll(/\/([^\s/<>[\]()]+)\s+(\d+)\s+\d+\s+R/g)) {
@@ -501,15 +511,15 @@ export async function extractPdfText(buf) {
 
     let table = null;
     const out = [];
-    // Resolving a font table is async, so gather the work first, then apply it.
-    const wanted = new Set();
-    scanContent(content, () => {}, () => {}, (name) => wanted.add(name));
-    for (const name of wanted) {
-      const num = fonts.get(name);
-      if (num !== undefined) {
-        const t = await tableFor(num);
-        if (t?.map.size) mappedFonts++;
-      }
+    // Font tables are read asynchronously and the scanner is synchronous, so
+    // the fonts this page selects are resolved first. A pattern is enough to
+    // find them - unlike decoding, which needs the operators in order - and
+    // it avoids parsing every page twice.
+    for (const f of content.matchAll(/\/([^\s/<>[\]()]+)\s+[-\d.]+\s+Tf/g)) {
+      const num = fonts.get(f[1]);
+      if (num === undefined || tables.has(num)) continue;
+      const t = await tableFor(num);
+      if (t?.map.size) mappedFonts++;
     }
 
     scanContent(

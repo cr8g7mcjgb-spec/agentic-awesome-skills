@@ -84,7 +84,7 @@ export function makeHwpx(paragraphs = ["2026학년도 수능 국어 영역", "�
  * what each id stands for. Without reading that CMap the bytes are unreadable,
  * which is exactly the case that used to be handed to an outside service.
  */
-export function makeCidPdf(text = "다음 글을 읽고 물음에 답하시오.", { withTable = true } = {}) {
+export function makeCidPdf(text = "다음 글을 읽고 물음에 답하시오.", { withTable = true, inheritResources = false } = {}) {
   const enc = new TextEncoder();
   const chars = [...text];
 
@@ -107,9 +107,13 @@ export function makeCidPdf(text = "다음 글을 읽고 물음에 답하시오."
 
   const objects = [
     "<</Type/Catalog/Pages 2 0 R>>",
-    "<</Type/Pages/Kids[3 0 R]/Count 1>>",
-    "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
-      "/Resources<</Font<</F1 4 0 R>>>>/Contents 7 0 R>>",
+    inheritResources
+      ? "<</Type/Pages/Kids[3 0 R]/Count 1/Resources<</Font<</F1 4 0 R>>>>>>"
+      : "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+    inheritResources
+      ? "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 7 0 R>>"
+      : "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
+        "/Resources<</Font<</F1 4 0 R>>>>/Contents 7 0 R>>",
     "<</Type/Font/Subtype/Type0/BaseFont/BatangChe/Encoding/Identity-H" +
       "/DescendantFonts[5 0 R]" + (withTable ? "/ToUnicode 6 0 R" : "") + ">>",
     "<</Type/Font/Subtype/CIDFontType2/BaseFont/BatangChe/CIDSystemInfo" +

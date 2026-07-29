@@ -865,7 +865,14 @@ async function extractPdfText(buf) {
   let imageXObjects = 0;
   let mappedFonts = 0;
   for (const [, page] of pages) {
-    const resources = dictValue(objects, page.dict, "Resources") || "";
+    let resources = "";
+    let node = page;
+    for (let hops = 0; node && hops < 8; hops++) {
+      resources = dictValue(objects, node.dict, "Resources") || "";
+      if (resources) break;
+      const parent = refIn(node.dict, "Parent");
+      node = parent === null ? null : objects.get(parent);
+    }
     const fontDict = dictValue(objects, resources, "Font") || "";
     const fonts = /* @__PURE__ */ new Map();
     for (const f of fontDict.matchAll(/\/([^\s/<>[\]()]+)\s+(\d+)\s+\d+\s+R/g)) {
@@ -890,16 +897,11 @@ async function extractPdfText(buf) {
     if (!content) continue;
     let table = null;
     const out = [];
-    const wanted = /* @__PURE__ */ new Set();
-    scanContent(content, () => {
-    }, () => {
-    }, (name) => wanted.add(name));
-    for (const name of wanted) {
-      const num = fonts.get(name);
-      if (num !== void 0) {
-        const t = await tableFor(num);
-        if (t?.map.size) mappedFonts++;
-      }
+    for (const f of content.matchAll(/\/([^\s/<>[\]()]+)\s+[-\d.]+\s+Tf/g)) {
+      const num = fonts.get(f[1]);
+      if (num === void 0 || tables.has(num)) continue;
+      const t = await tableFor(num);
+      if (t?.map.size) mappedFonts++;
     }
     scanContent(
       content,

@@ -37,6 +37,7 @@ async function serveFixtures() {
     "/compressed.pdf": [makePdf(KOREAN_PASSAGE, { compress: true }), "application/pdf"],
     "/glyphs.pdf": [makeCidPdf(KOREAN_PASSAGE), "application/pdf"],
     "/notable.pdf": [makeCidPdf(KOREAN_PASSAGE, { withTable: false }), "application/pdf"],
+    "/inherited.pdf": [makeCidPdf(KOREAN_PASSAGE, { inheritResources: true }), "application/pdf"],
     "/page": [Buffer.from(
       "<!doctype html><html><head><title>공고문</title></head><body><article>" +
       "<p>이 페이지는 첨부파일이 아니라 웹 문서입니다. 파일 도구에 넣어도 본문이 나와야 합니다. " +
@@ -235,6 +236,14 @@ const run = async () => {
     check("a PDF whose fonts cannot be decoded is not passed off as empty text",
       noTable.isError === true,
       (noTable.content?.[0]?.text || "").slice(0, 50).replace(/\n/g, " "));
+
+    // /Resources is inheritable and producers routinely declare it once on the
+    // /Pages node. Reading only the page dictionary finds no fonts at all.
+    const inherited = await readFile(`${base}/inherited.pdf`);
+    const inheritedText = inherited.content?.[0]?.text || "";
+    check("fonts declared on the parent page node are still found",
+      !inherited.isError && inheritedText.includes(KOREAN_PASSAGE),
+      inheritedText.split("\n").pop().slice(0, 40));
 
     const hwpx = await readFile(`${base}/exam.hwpx`);
     const hwpxText = hwpx.content?.[0]?.text || "";
