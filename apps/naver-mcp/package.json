@@ -16,8 +16,6 @@
     "wrangler": "^4.20.0"
   },
   "dependencies": {
-    "esbuild": "^0.28.1",
-    "fflate": "^0.8.3",
-    "unpdf": "^1.8.0"
+    "esbuild": "^0.28.1"
   }
 }

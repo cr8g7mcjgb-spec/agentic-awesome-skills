@@ -72,8 +72,8 @@ jobs:
         with:
           node-version: "22"
 
-      # The PDF and HWPX readers are npm packages, so the tools no longer run
-      # from a bare checkout.
+      # Only the bundler needs installing - the Worker itself has no runtime
+      # dependencies, by design.
       - name: Install dependencies
         working-directory: apps/naver-mcp
         run: npm ci --no-audit --no-fund

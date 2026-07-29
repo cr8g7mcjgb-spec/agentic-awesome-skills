@@ -25,10 +25,15 @@ function check(label, cond, detail = "") {
   console.log(`${cond ? "[PASS]" : "[FAIL]"} ${label} ${detail}`);
 }
 
+const KOREAN_PASSAGE =
+  "다음 글을 읽고 물음에 답하시오. 인간의 인식은 언제나 감각에서 출발하지만 " +
+  "감각만으로는 완결되지 않는다. 이 지문은 한글 추출 경로를 시험하기 위한 문장이다.";
+
 /** Serve the fixture documents so the Worker can fetch them over real HTTP. */
 async function serveFixtures() {
   const files = {
     "/paper.pdf": [makePdf(), "application/pdf"],
+    "/korean.pdf": [makePdf(KOREAN_PASSAGE), "application/pdf"],
     "/download?fileId=99": [makePdf(), "application/octet-stream"],
     "/exam.hwpx": [makeHwpx(), "application/hwp+zip"],
     "/scan.png": [makePng(), "image/png"],
@@ -185,6 +190,14 @@ const run = async () => {
     const sniffed = await readFile(`${base}/download?fileId=99`);
     check("read_file sniffs a PDF with no extension",
       !sniffed.isError && (sniffed.content?.[0]?.text || "").includes("SUNEUNG KOREAN"));
+
+    // The whole point of dropping pdf.js: Korean has to come out as letters
+    // from the PDF's own streams, with no library and no outside service.
+    const ko = await readFile(`${base}/korean.pdf`);
+    const koText = ko.content?.[0]?.text || "";
+    check("Korean PDF text comes from the PDF itself",
+      !ko.isError && koText.includes("감각만으로는 완결되지 않는다") && koText.includes("pdf-streams"),
+      koText.split("\n").pop().slice(0, 40));
 
     const hwpx = await readFile(`${base}/exam.hwpx`);
     const hwpxText = hwpx.content?.[0]?.text || "";

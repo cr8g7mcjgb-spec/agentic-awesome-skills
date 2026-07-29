@@ -2,13 +2,25 @@
  * Reading the formats Korean reference material actually ships in.
  *
  * Most of what is worth pulling - past exam papers, agency reports, notices -
- * is a PDF, an HWP, or a scan. The HTML reader cannot touch any of them, so
- * each gets the treatment its format allows and says plainly when it cannot
- * be read rather than returning something that merely looks like text.
+ * is a PDF, an HWP, or a scan, none of which the HTML reader can touch.
+ *
+ * Nothing here uses a library. That is not thrift for its own sake: pdf.js is
+ * 1.5 MB, and a Worker that large can no longer be deployed by pasting it into
+ * the Cloudflare editor, which is the only deploy route this project has. So
+ * each format uses something already present at the edge:
+ *
+ *   HWPX  - a zip of XML, opened with the built-in DecompressionStream
+ *   PDF   - its own Flate streams first, then r.jina.ai, the keyless reader
+ *           already used as a fallback for HTML
+ *   image - handed to the model as an image; no extraction at all
+ *
+ * Measured against real Korean PDFs found through Naver (see
+ * scripts/probe_pdf.py): r.jina.ai returned Korean text for 3 of 4, while raw
+ * stream extraction managed 1 of 4 because Korean PDFs usually encode text as
+ * font glyph ids that need the file's own ToUnicode map to become letters.
+ * Hence the order, and hence the confidence gate on the raw route.
  */
 
-import { extractText, getDocumentProxy } from "unpdf";
-import { unzipSync, strFromU8 } from "fflate";
 import { NaverError, htmlToText } from "./naver.js";
 
 export const MOBILE_UA =
@@ -19,8 +31,12 @@ export const MOBILE_UA =
 // with the size rather than dying halfway through a 60 MB scan.
 const MAX_BYTES = 12 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+// Past this, downloading the PDF to try the local route is wasted work - hand
+// the URL straight to the reader, which fetches it itself.
+const RAW_ROUTE_LIMIT = 6 * 1024 * 1024;
 
 const EXT = /\.(pdf|hwpx?|jpe?g|png|gif|webp|bmp)(?:$|[?#])/i;
+const HANGUL = /[가-힣]/g;
 
 /** What a URL and its response headers say the file is. */
 export function detectKind(url, contentType = "") {
@@ -79,59 +95,63 @@ async function fetchBinary(url, referer) {
   return { buf, contentType: resp.headers.get("Content-Type") || "" };
 }
 
-/* ------------------------------------------------------------------- PDF */
+/* ------------------------------------------------------------- inflate */
 
-/**
- * A scanned PDF parses cleanly and yields almost nothing, which reads as a
- * broken extractor unless the emptiness is named. Compare text against page
- * count to tell "no text layer" apart from "failed to parse".
- */
-export async function readPdf(buf, url) {
-  let doc;
-  try {
-    doc = await getDocumentProxy(buf);
-  } catch (e) {
-    throw new NaverError("PARSE_FAILED", `PDF를 열지 못했습니다: ${e.message}`, { url });
-  }
+/** Raw DEFLATE, using the decompressor the runtime already ships. */
+async function inflate(bytes) {
+  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
 
-  const { totalPages, text } = await extractText(doc, { mergePages: true });
-  const body = String(text || "").replace(/\n{3,}/g, "\n\n").trim();
-
-  if (body.length < totalPages * 20) {
-    throw new NaverError(
-      "SCANNED_PDF",
-      `이 PDF는 ${totalPages}쪽인데 글자가 ${body.length}자뿐입니다. 스캔 이미지로 만들어진 PDF라 텍스트를 뽑을 수 없습니다.`,
-      { url, pages: totalPages, chars: body.length }
-    );
-  }
-  return { text: body, pages: totalPages, how: "pdf-text-layer" };
+async function inflateRaw(bytes) {
+  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 /* ------------------------------------------------------------------ HWPX */
 
-// HWPX is a zip of XML; section files hold the body text.
-export function readHwpx(buf, url) {
-  let files;
-  try {
-    files = unzipSync(buf);
-  } catch (e) {
-    throw new NaverError("PARSE_FAILED", `HWPX 압축을 풀지 못했습니다: ${e.message}`, { url });
+/**
+ * HWPX is a zip of XML. Rather than pull in a zip library, walk the local file
+ * headers directly - the format is a handful of little-endian fields - and let
+ * DecompressionStream do the only hard part.
+ */
+export async function readHwpxBytes(buf, url) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const sections = [];
+  let i = 0;
+
+  while (i + 30 <= buf.length && dv.getUint32(i, true) === 0x04034b50) {
+    const method = dv.getUint16(i + 8, true);
+    const compSize = dv.getUint32(i + 18, true);
+    const nameLen = dv.getUint16(i + 26, true);
+    const extraLen = dv.getUint16(i + 28, true);
+    const name = new TextDecoder().decode(buf.subarray(i + 30, i + 30 + nameLen));
+    const dataStart = i + 30 + nameLen + extraLen;
+
+    if (!compSize) break; // streamed entry - sizes live in the central directory
+    if (/Contents\/section\d*\.xml$/i.test(name)) {
+      const raw = buf.subarray(dataStart, dataStart + compSize);
+      try {
+        sections.push({ name, bytes: method === 8 ? await inflateRaw(raw) : raw });
+      } catch (e) {
+        throw new NaverError("PARSE_FAILED", `HWPX 압축을 풀지 못했습니다: ${e.message}`, { url, name });
+      }
+    }
+    i = dataStart + compSize;
   }
 
-  const sections = Object.keys(files)
-    .filter((n) => /Contents\/section\d*\.xml$/i.test(n))
-    .sort();
   if (!sections.length) {
     throw new NaverError(
       "PARSE_FAILED",
       "HWPX 안에서 본문 파일(Contents/section*.xml)을 찾지 못했습니다.",
-      { url, entries: Object.keys(files).slice(0, 12) }
+      { url }
     );
   }
 
+  sections.sort((a, b) => a.name.localeCompare(b.name));
   const parts = [];
-  for (const name of sections) {
-    const xml = strFromU8(files[name]);
+  for (const s of sections) {
+    const xml = new TextDecoder().decode(s.bytes);
     // <hp:t> carries the runs of visible text; paragraphs end at </hp:p>.
     // Both are matched in one pass so the line breaks land between the runs
     // they separate instead of all collecting at the end.
@@ -145,7 +165,184 @@ export function readHwpx(buf, url) {
   if (text.length < 20) {
     throw new NaverError("PARSE_FAILED", "HWPX를 열었지만 본문 텍스트가 비어 있습니다.", { url });
   }
-  return { text, pages: sections.length, how: "hwpx-xml" };
+  return { text, pages: sections.length, how: "hwpx-zip" };
+}
+
+/* ------------------------------------------------------------------- PDF */
+
+/** Undo the escapes PDF uses inside ( ) literal strings. */
+function unescapePdfString(s) {
+  return s.replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (_, esc) => {
+    const simple = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", "(": "(", ")": ")", "\\": "\\" };
+    if (simple[esc] !== undefined) return simple[esc];
+    return String.fromCharCode(parseInt(esc, 8));
+  });
+}
+
+/**
+ * Pull text out of a PDF's own content streams.
+ *
+ * This is free and instant when it works, which is why it runs first - but it
+ * only works when the text was stored as characters. Korean PDFs commonly
+ * store glyph ids instead, which come out as noise, so the caller checks the
+ * confidence before trusting the result.
+ */
+export async function extractPdfStreams(buf) {
+  const latin = new TextDecoder("latin1").decode(buf);
+  const utf8 = new TextDecoder("utf-8", { fatal: false });
+  const pieces = [];
+  let streams = 0;
+
+  const re = /stream\r?\n/g;
+  let m;
+  while ((m = re.exec(latin)) !== null) {
+    const start = m.index + m[0].length;
+    const end = latin.indexOf("endstream", start);
+    if (end < 0) continue;
+    re.lastIndex = end;
+
+    // The stream's dictionary sits just before it and says how it is encoded.
+    const dict = latin.slice(Math.max(0, m.index - 400), m.index);
+    if (/\/Image|\/DCTDecode|\/JPXDecode|\/CCITTFaxDecode/.test(dict)) continue;
+
+    let bytes = buf.subarray(start, end);
+    if (/\/FlateDecode/.test(dict)) {
+      try {
+        bytes = await inflate(bytes);
+      } catch {
+        continue; // a stream we cannot open is not a reason to abandon the file
+      }
+    }
+    streams++;
+
+    const text = utf8.decode(bytes);
+    for (const t of text.matchAll(/\(((?:[^()\\]|\\[\s\S])*)\)\s*(?:Tj|TJ|'|")/g)) {
+      pieces.push(unescapePdfString(t[1]));
+    }
+    // TJ takes an array of fragments with kerning numbers between them.
+    for (const arr of text.matchAll(/\[((?:[^\][\\]|\\[\s\S])*)\]\s*TJ/g)) {
+      for (const t of arr[1].matchAll(/\(((?:[^()\\]|\\[\s\S])*)\)/g)) {
+        pieces.push(unescapePdfString(t[1]));
+      }
+    }
+    pieces.push("\n");
+  }
+
+  const text = pieces.join("").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  const hangul = (text.match(HANGUL) || []).length;
+  // Glyph ids decoded as text show up as replacement characters and control
+  // bytes. Counting them is how a real extraction is told from noise.
+  const junk = (text.match(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
+  return { text, hangul, junk, streams };
+}
+
+/**
+ * r.jina.ai renders the document and hands back text. No key, no account -
+ * the same reader this server already falls back to for HTML pages.
+ */
+const PRIVATE_HOST =
+  /^(?:localhost|127\.|0\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|\[?::1)/i;
+
+export async function readPdfViaReader(url) {
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    /* handled below */
+  }
+  if (!host || PRIVATE_HOST.test(host)) {
+    // Sending an internal address to an outside service would leak it and
+    // could not work anyway - that host is not reachable from there.
+    throw new NaverError("UPSTREAM", "외부 리더로 보낼 수 없는 주소입니다.", { url });
+  }
+
+  let resp;
+  try {
+    resp = await fetch(`https://r.jina.ai/${url}`, {
+      headers: {
+        "User-Agent": MOBILE_UA,
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        Accept: "text/plain, text/markdown, */*",
+      },
+      // Measured: an 8 MB PDF timed out. Give up rather than hold the request.
+      signal: AbortSignal.timeout(50_000),
+    });
+  } catch (e) {
+    throw new NaverError("UPSTREAM", `PDF 리더가 응답하지 않았습니다 (${e.name}).`, { url });
+  }
+
+  if (resp.status === 429) {
+    throw new NaverError(
+      "BLOCKED",
+      "PDF 리더(r.jina.ai)가 요청 한도에 걸렸습니다. 잠시 후 다시 시도하면 됩니다.",
+      { url }
+    );
+  }
+  if (!resp.ok) {
+    throw new NaverError("UPSTREAM", `PDF 리더가 오류를 반환했습니다 (HTTP ${resp.status}).`, { url });
+  }
+
+  const raw = await resp.text();
+  // The reader prefixes its own Title / URL Source / Published header block.
+  const body = raw.replace(/^(?:Title|URL Source|Published Time|Markdown Content):.*\n/gm, "").trim();
+  return body;
+}
+
+/**
+ * PDF text by the cheapest route that actually works on this file.
+ *
+ * A scanned PDF yields nothing on either route, which reads as a broken
+ * extractor unless the emptiness is named - so that case gets its own error.
+ */
+export async function readPdf(url, buf) {
+  const trace = [];
+
+  if (buf && buf.byteLength <= RAW_ROUTE_LIMIT) {
+    try {
+      const local = await extractPdfStreams(buf);
+      // Trust it only when the text came out as letters. A Korean PDF whose
+      // text is stored as glyph ids gives itself away: thousands of text
+      // operators, a handful of Hangul characters. Either the Hangul is
+      // clearly there, or there is none at all and the document is Latin.
+      const clean = local.junk < Math.max(8, local.text.length / 40);
+      const readable =
+        clean &&
+        local.text.length >= 20 &&
+        (local.hangul >= 50 || local.hangul === 0);
+      trace.push({
+        route: "pdf-streams",
+        result: readable ? "ok" : "low-confidence",
+        message: `${local.hangul} hangul, ${local.junk} junk, ${local.streams} streams`,
+      });
+      if (readable) return { text: local.text, pages: local.streams, how: "pdf-streams" };
+    } catch (e) {
+      trace.push({ route: "pdf-streams", result: "failed", message: e.message });
+    }
+  } else {
+    trace.push({ route: "pdf-streams", result: "skipped", message: "파일이 커서 건너뜀" });
+  }
+
+  let viaReader = "";
+  try {
+    viaReader = await readPdfViaReader(url);
+    trace.push({ route: "jina-reader", result: viaReader ? "ok" : "empty", message: `${viaReader.length} chars` });
+  } catch (e) {
+    trace.push({ route: "jina-reader", result: "failed", message: e.message });
+    if (e instanceof NaverError && e.kind === "BLOCKED") {
+      e.detail = { ...(e.detail || {}), trace };
+      throw e;
+    }
+  }
+
+  if (viaReader.length > 200) {
+    return { text: viaReader, pages: null, how: "jina-reader" };
+  }
+
+  throw new NaverError(
+    "SCANNED_PDF",
+    "이 PDF에서 텍스트를 찾지 못했습니다. 스캔 이미지로 만들어진 PDF일 가능성이 높습니다.",
+    { url, trace }
+  );
 }
 
 /* ------------------------------------------------------------------- HWP */
@@ -219,8 +416,8 @@ export async function readFile(url, { referer } = {}) {
   }
 
   switch (kind) {
-    case "pdf":   return { type: "text", ...(await readPdf(buf, url)) };
-    case "hwpx":  return { type: "text", ...readHwpx(buf, url) };
+    case "pdf":   return { type: "text", ...(await readPdf(url, buf)) };
+    case "hwpx":  return { type: "text", ...(await readHwpxBytes(buf, url)) };
     case "hwp":   return rejectHwp(url);
     case "image": return { type: "image", ...readImage(buf, contentType, url) };
     default:

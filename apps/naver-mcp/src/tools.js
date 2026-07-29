@@ -343,7 +343,7 @@ export async function readFileUrl({ url, max_chars }) {
 
   const header = [
     `출처: ${raw}`,
-    `형식: ${res.how === "pdf-text-layer" ? "PDF" : "HWPX"} · ${res.pages}${res.how === "pdf-text-layer" ? "쪽" : "개 구역"}`,
+    `형식: ${res.how.startsWith("pdf") ? "PDF" : "HWPX"} (${res.how})`,
   ].join("\n");
   return `${header}\n\n---\n\n${capLength(res.text, max_chars).text}`;
 }

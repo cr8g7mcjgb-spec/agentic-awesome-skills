@@ -76,42 +76,61 @@ Code sandbox, can reach Naver):
 ## File formats
 
 Most Korean reference material — past exam papers, government reports, notices
-— is distributed as PDF, HWP, or a scan, none of which the HTML reader can
-touch. `read_file` handles them, and `read_article` hands a file URL over
-automatically, so a link from search works whichever tool the model reaches for.
+— is distributed as an attachment, not as HTML. `read_file` reads those, and
+`read_article` hands a file URL over automatically, so a link from search works
+whichever tool the model reaches for.
 
-The format is decided by Content-Type, then by extension, then by magic bytes —
+**No library is used for any of it.** That is not thrift for its own sake:
+`pdf.js` is 1.5 MB, and a Worker that large can no longer be pasted into the
+Cloudflare editor, which is this project's only deploy route. Each format uses
+something already present at the edge instead.
+
+| Format | How | Result |
+| --- | --- | --- |
+| HWPX | Local file headers walked by hand, inflated with the built-in `DecompressionStream` | Text |
+| PDF | Its own Flate streams first; `r.jina.ai` when those hold glyph ids rather than letters | Text |
+| Image | Handed over as an MCP **image block** — no extraction at all | The model sees the page |
+| Scanned PDF | Neither route finds text | `SCANNED_PDF` |
+| Legacy `.hwp` | Compound-binary, no small reader exists | `UNSUPPORTED_FORMAT` + how to convert |
+
+The format is decided by Content-Type, then extension, then magic bytes —
 Korean download links routinely look like `?fileId=1234` with no extension and
 `application/octet-stream` on the response.
 
-| Format | Result | Verified by |
+### Why PDF has two routes
+
+Measured against real Korean PDFs discovered through Naver search
+(`scripts/probe_pdf.py`, run on a GitHub runner):
+
+| Route | Korean PDFs read | Note |
 | --- | --- | --- |
-| PDF with a text layer | Text | `unpdf` extracting a built-in fixture through the bundled Worker |
-| HWPX | Text | `fflate` unzip + `<hp:t>` runs from `Contents/section*.xml` |
-| Images (PNG/JPEG/…) | An MCP **image block**, not OCR output | Base64 round-trip asserted in `test_worker.mjs` |
-| Scanned PDF | `SCANNED_PDF` | Text length compared against page count |
-| Legacy `.hwp` | `UNSUPPORTED_FORMAT` + how to convert | OLE signature detection |
+| `r.jina.ai` | 3 / 4 | 6,604 / 4,002 / 4,436 Hangul characters; the miss was an 8 MB file timing out |
+| PDF's own streams | 1 / 4 | Korean PDFs usually store glyph ids that need the file's ToUnicode map |
+| Control (English PDF) | pass | 40,795 characters — proves the route, says nothing about Hangul |
 
-Images go to the model as images. OCR was ruled out rather than attempted —
-Korean language data alone runs to tens of megabytes, past the Worker limit —
-and a model that can see the page reads tables, diagrams and layout that OCR
-would flatten into a line of characters.
+So the local route runs first because it is free and instant, but its output is
+only trusted when the text came out as letters: clearly present Hangul, or none
+at all with clean Latin. Anything in between is glyph noise and goes to the
+reader. `r.jina.ai` needs no key and is already the HTML fallback — this is the
+same door, used for one more format.
 
-Size caps: 12 MB per file, 4 MB per image, both refused up front with the
-measured size rather than dying halfway through.
+Images are handed to the model as images. OCR was ruled out rather than
+attempted: Korean language data alone runs to tens of megabytes, and a model
+that can see the page reads tables and layout that OCR would flatten.
 
-**Bundle cost.** `unpdf` + `fflate` take the Worker from 57 KB to:
+Size caps: 12 MB per file, 4 MB per image, and PDFs over 6 MB skip the local
+route rather than be downloaded twice.
+
+**Bundle cost** — the whole Worker, with every format supported:
 
 ```
-dist/worker.js      raw 2,457,597   gzip 594,427
-dist/worker.min.js  raw 1,664,983   gzip 519,837
-                                    limit 3,145,728 (Workers gzip)
+dist/worker.js      raw 70,202   gzip 18,983
+dist/worker.min.js  raw 49,871   gzip 15,855
+                                 limit 3,145,728
 ```
 
-It fits with room to spare, but it is far past what the Cloudflare dashboard's
-code editor can take — **format support means deploying from Git or with
-wrangler, not by pasting.** `scripts/bundle.mjs` fails the build if a bundle
-ever crosses the limit.
+Small enough to keep deploying by pasting. `scripts/bundle.mjs` fails the build
+if that ever stops being true.
 
 ## Deploying
 
