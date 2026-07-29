@@ -512,7 +512,7 @@ function detectKind(url, contentType = "") {
   if (ext === "hwp") return "hwp";
   return "image";
 }
-async function fetchBinary(url, referer) {
+async function fetchBinary(url, referer, { maxBody = MAX_BYTES } = {}) {
   const resp = await fetch(url, {
     headers: {
       "User-Agent": MOBILE_UA2,
@@ -531,13 +531,11 @@ async function fetchBinary(url, referer) {
   if (!resp.ok) {
     throw new NaverError("UPSTREAM", `\uD30C\uC77C\uC744 \uBC1B\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (HTTP ${resp.status}).`, { url });
   }
+  const contentType = resp.headers.get("Content-Type") || "";
   const declared = Number(resp.headers.get("Content-Length") || 0);
-  if (declared > MAX_BYTES) {
-    throw new NaverError(
-      "TOO_LARGE",
-      `\uD30C\uC77C\uC774 ${(declared / 1048576).toFixed(1)}MB\uB85C \uB108\uBB34 \uD07D\uB2C8\uB2E4 (\uD55C\uB3C4 ${MAX_BYTES / 1048576}MB).`,
-      { url, bytes: declared }
-    );
+  if (declared > maxBody) {
+    resp.body?.cancel();
+    return { buf: null, contentType, declared };
   }
   const buf = new Uint8Array(await resp.arrayBuffer());
   if (buf.byteLength > MAX_BYTES) {
@@ -547,49 +545,51 @@ async function fetchBinary(url, referer) {
       { url, bytes: buf.byteLength }
     );
   }
-  return { buf, contentType: resp.headers.get("Content-Type") || "" };
+  return { buf, contentType, declared };
+}
+async function inflateWith(bytes, format) {
+  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream(format));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 async function inflate(bytes) {
-  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  let end = bytes.length;
+  while (end > 0 && (bytes[end - 1] === 10 || bytes[end - 1] === 13 || bytes[end - 1] === 32)) {
+    end--;
+  }
+  const trimmed = bytes.subarray(0, end);
+  try {
+    return await inflateWith(trimmed, "deflate");
+  } catch (e) {
+    try {
+      return await inflateWith(trimmed, "deflate-raw");
+    } catch {
+      throw e;
+    }
+  }
 }
 async function inflateRaw(bytes) {
-  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  return inflateWith(bytes, "deflate-raw");
 }
 async function readHwpxBytes(buf, url) {
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const sections = [];
-  let i = 0;
-  while (i + 30 <= buf.length && dv.getUint32(i, true) === 67324752) {
-    const method = dv.getUint16(i + 8, true);
-    const compSize = dv.getUint32(i + 18, true);
-    const nameLen = dv.getUint16(i + 26, true);
-    const extraLen = dv.getUint16(i + 28, true);
-    const name = new TextDecoder().decode(buf.subarray(i + 30, i + 30 + nameLen));
-    const dataStart = i + 30 + nameLen + extraLen;
-    if (!compSize) break;
-    if (/Contents\/section\d*\.xml$/i.test(name)) {
-      const raw = buf.subarray(dataStart, dataStart + compSize);
-      try {
-        sections.push({ name, bytes: method === 8 ? await inflateRaw(raw) : raw });
-      } catch (e) {
-        throw new NaverError("PARSE_FAILED", `HWPX \uC555\uCD95\uC744 \uD480\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${e.message}`, { url, name });
-      }
-    }
-    i = dataStart + compSize;
-  }
+  const files = unzipEntries(buf);
+  const sections = Object.keys(files).filter((n) => /Contents\/section\d*\.xml$/i.test(n)).sort();
   if (!sections.length) {
     throw new NaverError(
       "PARSE_FAILED",
       "HWPX \uC548\uC5D0\uC11C \uBCF8\uBB38 \uD30C\uC77C(Contents/section*.xml)\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
-      { url }
+      { url, entries: Object.keys(files).slice(0, 12) }
     );
   }
-  sections.sort((a, b) => a.name.localeCompare(b.name));
   const parts = [];
-  for (const s of sections) {
-    const xml = new TextDecoder().decode(s.bytes);
+  for (const name of sections) {
+    const raw = files[name];
+    let bytes;
+    try {
+      bytes = raw.method === 8 ? await inflateRaw(raw.data) : raw.data;
+    } catch (e) {
+      throw new NaverError("PARSE_FAILED", `HWPX \uC555\uCD95\uC744 \uD480\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${e.message}`, { url, name });
+    }
+    const xml = new TextDecoder().decode(bytes);
     for (const m of xml.matchAll(/<hp:t[^>]*>([\s\S]*?)<\/hp:t>|<\/hp:p>/g)) {
       parts.push(m[1] === void 0 ? "\n" : m[1]);
     }
@@ -600,6 +600,40 @@ async function readHwpxBytes(buf, url) {
     throw new NaverError("PARSE_FAILED", "HWPX\uB97C \uC5F4\uC5C8\uC9C0\uB9CC \uBCF8\uBB38 \uD14D\uC2A4\uD2B8\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.", { url });
   }
   return { text, pages: sections.length, how: "hwpx-zip" };
+}
+function unzipEntries(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  const from = Math.max(0, buf.length - 66e3);
+  for (let i = buf.length - 22; i >= from; i--) {
+    if (dv.getUint32(i, true) === 101010256) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return {};
+  const count = dv.getUint16(eocd + 10, true);
+  let at = dv.getUint32(eocd + 16, true);
+  const out = {};
+  const dec = new TextDecoder();
+  for (let n = 0; n < count && at + 46 <= buf.length; n++) {
+    if (dv.getUint32(at, true) !== 33639248) break;
+    const method = dv.getUint16(at + 10, true);
+    const compSize = dv.getUint32(at + 20, true);
+    const nameLen = dv.getUint16(at + 28, true);
+    const extraLen = dv.getUint16(at + 30, true);
+    const commentLen = dv.getUint16(at + 32, true);
+    const localAt = dv.getUint32(at + 42, true);
+    const name = dec.decode(buf.subarray(at + 46, at + 46 + nameLen));
+    if (localAt + 30 <= buf.length && dv.getUint32(localAt, true) === 67324752) {
+      const lNameLen = dv.getUint16(localAt + 26, true);
+      const lExtraLen = dv.getUint16(localAt + 28, true);
+      const dataAt = localAt + 30 + lNameLen + lExtraLen;
+      out[name] = { method, data: buf.subarray(dataAt, dataAt + compSize) };
+    }
+    at += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
 }
 function unescapePdfString(s) {
   return s.replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (_, esc) => {
@@ -613,15 +647,31 @@ async function extractPdfStreams(buf) {
   const utf8 = new TextDecoder("utf-8", { fatal: false });
   const pieces = [];
   let streams = 0;
-  const re = /stream\r?\n/g;
+  let imageStreams = 0;
+  let textOps = 0;
+  const re = /(^|[^a-zA-Z])stream\r?\n/g;
   let m;
   while ((m = re.exec(latin)) !== null) {
-    const start = m.index + m[0].length;
-    const end = latin.indexOf("endstream", start);
+    const at = m.index + m[1].length;
+    const start = at + m[0].length - m[1].length;
+    const objAt = latin.lastIndexOf(" obj", at);
+    const dictFrom = objAt >= 0 && at - objAt < 8e3 ? objAt + 4 : Math.max(0, at - 600);
+    const dict = latin.slice(dictFrom, at);
+    const declared = Number((dict.match(/\/Length\s+(\d+)/) || [])[1] || 0);
+    let end = -1;
+    if (declared > 0 && latin.startsWith("endstream", start + declared)) {
+      end = start + declared;
+    } else if (declared > 0 && /^\s{0,4}endstream/.test(latin.slice(start + declared, start + declared + 13))) {
+      end = start + declared;
+    } else {
+      end = latin.indexOf("endstream", start);
+    }
     if (end < 0) continue;
     re.lastIndex = end;
-    const dict = latin.slice(Math.max(0, m.index - 400), m.index);
-    if (/\/Image|\/DCTDecode|\/JPXDecode|\/CCITTFaxDecode/.test(dict)) continue;
+    if (/\/Image|\/DCTDecode|\/JPXDecode|\/JBIG2Decode|\/CCITTFaxDecode/.test(dict)) {
+      imageStreams++;
+      continue;
+    }
     let bytes = buf.subarray(start, end);
     if (/\/FlateDecode/.test(dict)) {
       try {
@@ -632,6 +682,7 @@ async function extractPdfStreams(buf) {
     }
     streams++;
     const text2 = utf8.decode(bytes);
+    textOps += (text2.match(/\)\s*Tj|\]\s*TJ/g) || []).length;
     for (const t of text2.matchAll(/\(((?:[^()\\]|\\[\s\S])*)\)\s*(?:Tj|TJ|'|")/g)) {
       pieces.push(unescapePdfString(t[1]));
     }
@@ -645,7 +696,7 @@ async function extractPdfStreams(buf) {
   const text = pieces.join("").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
   const hangul = (text.match(HANGUL) || []).length;
   const junk = (text.match(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
-  return { text, hangul, junk, streams };
+  return { text, hangul, junk, streams, imageStreams, textOps };
 }
 var PRIVATE_HOST = /^(?:localhost|127\.|0\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|\[?::1)/i;
 async function readPdfViaReader(url) {
@@ -690,6 +741,13 @@ async function readPdf(url, buf) {
   if (buf && buf.byteLength <= RAW_ROUTE_LIMIT) {
     try {
       const local = await extractPdfStreams(buf);
+      if (local.textOps === 0 && local.imageStreams > 0) {
+        throw new NaverError(
+          "SCANNED_PDF",
+          `\uC774 PDF\uB294 \uAE00\uC790 \uC5C6\uC774 \uC774\uBBF8\uC9C0 ${local.imageStreams}\uAC1C\uB85C\uB9CC \uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uC2A4\uCE94\uBCF8\uC774\uB77C \uD14D\uC2A4\uD2B8\uB97C \uBF51\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.`,
+          { url, images: local.imageStreams }
+        );
+      }
       const clean = local.junk < Math.max(8, local.text.length / 40);
       const readable = clean && local.text.length >= 20 && (local.hangul >= 50 || local.hangul === 0);
       trace.push({
@@ -699,16 +757,19 @@ async function readPdf(url, buf) {
       });
       if (readable) return { text: local.text, pages: local.streams, how: "pdf-streams" };
     } catch (e) {
+      if (e instanceof NaverError && e.kind === "SCANNED_PDF") throw e;
       trace.push({ route: "pdf-streams", result: "failed", message: e.message });
     }
   } else {
     trace.push({ route: "pdf-streams", result: "skipped", message: "\uD30C\uC77C\uC774 \uCEE4\uC11C \uAC74\uB108\uB700" });
   }
   let viaReader = "";
+  let readerFailed = null;
   try {
     viaReader = await readPdfViaReader(url);
     trace.push({ route: "jina-reader", result: viaReader ? "ok" : "empty", message: `${viaReader.length} chars` });
   } catch (e) {
+    readerFailed = e;
     trace.push({ route: "jina-reader", result: "failed", message: e.message });
     if (e instanceof NaverError && e.kind === "BLOCKED") {
       e.detail = { ...e.detail || {}, trace };
@@ -717,6 +778,13 @@ async function readPdf(url, buf) {
   }
   if (viaReader.length > 200) {
     return { text: viaReader, pages: null, how: "jina-reader" };
+  }
+  if (readerFailed) {
+    throw new NaverError(
+      "UPSTREAM",
+      "\uC774 PDF\uB294 \uC790\uCCB4 \uCD94\uCD9C\uB85C\uB3C4, \uC678\uBD80 \uB9AC\uB354\uB85C\uB3C4 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uB9AC\uB354\uAC00 \uC751\uB2F5\uD558\uC9C0 \uC54A\uC544 \uC2A4\uCE94\uBCF8\uC778\uC9C0 \uC5EC\uBD80\uB294 \uD655\uC778\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",
+      { url, trace }
+    );
   }
   throw new NaverError(
     "SCANNED_PDF",
@@ -755,14 +823,34 @@ function readImage(buf, contentType, url) {
   return { base64: toBase64(buf), mimeType: mime, bytes: buf.byteLength };
 }
 async function readFile(url, { referer } = {}) {
-  const { buf, contentType } = await fetchBinary(url, referer);
+  const { buf, contentType, declared } = await fetchBinary(url, referer, {
+    maxBody: RAW_ROUTE_LIMIT
+  });
   let kind = detectKind(url, contentType);
+  if (!buf) {
+    if (kind === "pdf") return { type: "text", ...await readPdf(url, null) };
+    if (declared > MAX_BYTES) {
+      throw new NaverError(
+        "TOO_LARGE",
+        `\uD30C\uC77C\uC774 ${(declared / 1048576).toFixed(1)}MB\uB85C \uB108\uBB34 \uD07D\uB2C8\uB2E4 (\uD55C\uB3C4 ${MAX_BYTES / 1048576}MB).`,
+        { url, bytes: declared }
+      );
+    }
+    throw new NaverError(
+      "TOO_LARGE",
+      `\uC774 \uD615\uC2DD\uC740 ${(declared / 1048576).toFixed(1)}MB\uC5D0\uC11C \uCC98\uB9AC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.`,
+      { url, bytes: declared }
+    );
+  }
   if (!kind) {
     if (buf[0] === 37 && buf[1] === 80 && buf[2] === 68 && buf[3] === 70) kind = "pdf";
     else if (buf[0] === 80 && buf[1] === 75) kind = "hwpx";
     else if (buf[0] === 208 && buf[1] === 207) kind = "hwp";
     else if (buf[0] === 255 && buf[1] === 216) kind = "image";
     else if (buf[0] === 137 && buf[1] === 80) kind = "image";
+    else if (/^\s*<(?:!doctype|html|\?xml)/i.test(new TextDecoder().decode(buf.subarray(0, 200)))) {
+      kind = "html";
+    }
   }
   switch (kind) {
     case "pdf":
@@ -773,6 +861,8 @@ async function readFile(url, { referer } = {}) {
       return rejectHwp(url);
     case "image":
       return { type: "image", ...readImage(buf, contentType, url) };
+    case "html":
+      return { type: "html" };
     default:
       throw new NaverError(
         "UNSUPPORTED_FORMAT",
@@ -976,7 +1066,19 @@ ${capLength(post2.text, max_chars).text}`;
 ${capLength(post2.text, max_chars).text}`;
   }
   if (detectKind(raw)) return readFileUrl({ url: raw, max_chars });
-  const post = await readViaChain(genericReadRoutes(raw));
+  let post;
+  try {
+    post = await readViaChain(genericReadRoutes(raw));
+  } catch (err) {
+    if (err instanceof NaverError && (err.kind === "PARSE_FAILED" || err.kind === "UNSUPPORTED_FORMAT")) {
+      try {
+        return await readFileUrl({ url: raw, max_chars, _fromArticle: true });
+      } catch {
+        throw err;
+      }
+    }
+    throw err;
+  }
   let host = raw;
   try {
     host = new URL(raw).hostname;
@@ -996,7 +1098,7 @@ ${capLength(post2.text, max_chars).text}`;
 
 ${capLength(post.text, max_chars).text}`;
 }
-async function readFileUrl({ url, max_chars }) {
+async function readFileUrl({ url, max_chars, _fromArticle = false }) {
   const raw = String(url || "").trim();
   if (!/^https?:\/\//i.test(raw)) {
     throw new NaverError("BAD_INPUT", "A full http(s):// URL is required.", { url: raw });
@@ -1007,6 +1109,12 @@ async function readFileUrl({ url, max_chars }) {
   } catch {
   }
   const res = await readFile(raw, { referer: origin });
+  if (res.type === "html") {
+    if (_fromArticle) {
+      throw new NaverError("PARSE_FAILED", "\uD30C\uC77C\uC774 \uC544\uB2C8\uB77C \uC6F9 \uD398\uC774\uC9C0\uC785\uB2C8\uB2E4.", { url: raw });
+    }
+    return readArticle({ url: raw, max_chars });
+  }
   if (res.type === "image") {
     return {
       blocks: [

@@ -291,7 +291,22 @@ export async function readArticle({ url, max_chars }) {
   // Anything else - government sites, journals, ordinary news - reads through
   // the generic path. Naver's search links out to all of these, so refusing
   // unrecognised hosts would make search results unopenable.
-  const post = await readViaChain(genericReadRoutes(raw));
+  let post;
+  try {
+    post = await readViaChain(genericReadRoutes(raw));
+  } catch (err) {
+    // Korean download links routinely have no extension - "?fileId=1234"
+    // serving a PDF looks like a web page until you fetch it. Rather than
+    // report "no body found", try reading it as a file before giving up.
+    if (err instanceof NaverError && (err.kind === "PARSE_FAILED" || err.kind === "UNSUPPORTED_FORMAT")) {
+      try {
+        return await readFileUrl({ url: raw, max_chars, _fromArticle: true });
+      } catch {
+        throw err; // the original failure is the more useful one to report
+      }
+    }
+    throw err;
+  }
   let host = raw;
   try {
     host = new URL(raw).hostname;
@@ -317,7 +332,7 @@ export async function readArticle({ url, max_chars }) {
  * Returns text for documents and an image block for pictures, so the caller
  * gets whichever form the file can actually be understood in.
  */
-export async function readFileUrl({ url, max_chars }) {
+export async function readFileUrl({ url, max_chars, _fromArticle = false }) {
   const raw = String(url || "").trim();
   if (!/^https?:\/\//i.test(raw)) {
     throw new NaverError("BAD_INPUT", "A full http(s):// URL is required.", { url: raw });
@@ -331,6 +346,15 @@ export async function readFileUrl({ url, max_chars }) {
   }
 
   const res = await readFile(raw, { referer: origin });
+
+  if (res.type === "html") {
+    // Handed a web page. The HTML reader is right there; use it rather than
+    // telling the user their link is an unsupported format.
+    if (_fromArticle) {
+      throw new NaverError("PARSE_FAILED", "파일이 아니라 웹 페이지입니다.", { url: raw });
+    }
+    return readArticle({ url: raw, max_chars });
+  }
 
   if (res.type === "image") {
     return {

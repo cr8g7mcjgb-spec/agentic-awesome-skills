@@ -8,7 +8,7 @@
  */
 
 import { createServer } from "node:http";
-import { makePdf, makeHwpx, makePng, makeHwp } from "./fixtures.mjs";
+import { makePdf, makeHwpx, makePng, makeHwp, makeScannedPdf } from "./fixtures.mjs";
 
 // Which build to drive. Both bundles are deployed from, so the minified one
 // has to pass the same checks as the readable one.
@@ -34,10 +34,19 @@ async function serveFixtures() {
   const files = {
     "/paper.pdf": [makePdf(), "application/pdf"],
     "/korean.pdf": [makePdf(KOREAN_PASSAGE), "application/pdf"],
+    "/compressed.pdf": [makePdf(KOREAN_PASSAGE, { compress: true }), "application/pdf"],
+    "/page": [Buffer.from(
+      "<!doctype html><html><head><title>공고문</title></head><body><article>" +
+      "<p>이 페이지는 첨부파일이 아니라 웹 문서입니다. 파일 도구에 넣어도 본문이 나와야 합니다. " +
+      "확장자가 없는 주소는 열어보기 전에는 무엇인지 알 수 없기 때문입니다. 한국 공공기관 게시판은 " +
+      "첨부파일 주소와 본문 주소가 같은 모양을 하고 있어서, 둘 중 무엇이 오더라도 읽히는 편이 낫습니다. " +
+      "그렇지 않으면 사용자는 링크가 잘못된 줄 알고 다시 찾아 헤매게 됩니다. 이 문단은 본문 추출기가 " +
+      "요구하는 최소 길이를 넘기기 위해 충분히 길게 작성되었습니다.</p></article></body></html>"
+    ), "application/octet-stream"],
     "/download?fileId=99": [makePdf(), "application/octet-stream"],
     "/exam.hwpx": [makeHwpx(), "application/hwp+zip"],
     "/scan.png": [makePng(), "image/png"],
-    "/scan.pdf": [makePdf(""), "application/pdf"],
+    "/scan.pdf": [makeScannedPdf(), "application/pdf"],
     "/old.hwp": [makeHwp(), "application/x-hwp"],
   };
   const server = createServer((req, res) => {
@@ -199,6 +208,16 @@ const run = async () => {
       !ko.isError && koText.includes("감각만으로는 완결되지 않는다") && koText.includes("pdf-streams"),
       koText.split("\n").pop().slice(0, 40));
 
+    // Real PDFs compress their content streams and put a newline before
+    // `endstream`. An uncompressed fixture cannot catch a decompressor that
+    // rejects that newline - and one did, on every genuine file.
+    const zipped = await readFile(`${base}/compressed.pdf`);
+    const zippedText = zipped.content?.[0]?.text || "";
+    check("compressed PDF streams are read",
+      !zipped.isError && zippedText.includes("감각만으로는 완결되지 않는다") &&
+        zippedText.includes("pdf-streams"),
+      zippedText.split("\n").pop().slice(0, 40));
+
     const hwpx = await readFile(`${base}/exam.hwpx`);
     const hwpxText = hwpx.content?.[0]?.text || "";
     check("read_file extracts HWPX text",
@@ -213,14 +232,24 @@ const run = async () => {
       block ? `${block.data.length} b64 chars` : "no image block");
 
     const scanned = await readFile(`${base}/scan.pdf`);
-    check("a PDF with no text layer is called SCANNED_PDF",
+    // Decided from the file itself - pages of images with no text operators -
+    // so it holds even when no outside reader can be reached for a second look.
+    check("a scanned PDF is named as one, without asking anybody",
       scanned.isError && (scanned.content?.[0]?.text || "").includes("SCANNED_PDF"),
-      (scanned.content?.[0]?.text || "").slice(0, 45));
+      (scanned.content?.[0]?.text || "").slice(0, 55));
 
     const legacy = await readFile(`${base}/old.hwp`);
     check("legacy .hwp is refused with conversion advice",
       legacy.isError && (legacy.content?.[0]?.text || "").includes("UNSUPPORTED_FORMAT"),
       (legacy.content?.[0]?.text || "").slice(0, 45));
+
+    // A link with no extension that turns out to be a web page must be read,
+    // not refused - "?fileId=1234" gives no clue either way until it is opened.
+    const page = await readFile(`${base}/page`);
+    const pageText = page.content?.[0]?.text || "";
+    check("a web page handed to the file tool is still read",
+      !page.isError && pageText.includes("첨부파일이 아니라 웹 문서"),
+      pageText.slice(0, 45).replace(/\n/g, " "));
 
     const missing = await readFile(`${base}/gone.pdf`);
     check("a missing file is NOT_FOUND, not a parse failure",

@@ -54,7 +54,7 @@ export function detectKind(url, contentType = "") {
   return "image";
 }
 
-async function fetchBinary(url, referer) {
+async function fetchBinary(url, referer, { maxBody = MAX_BYTES } = {}) {
   const resp = await fetch(url, {
     headers: {
       "User-Agent": MOBILE_UA,
@@ -75,13 +75,13 @@ async function fetchBinary(url, referer) {
     throw new NaverError("UPSTREAM", `파일을 받지 못했습니다 (HTTP ${resp.status}).`, { url });
   }
 
+  const contentType = resp.headers.get("Content-Type") || "";
   const declared = Number(resp.headers.get("Content-Length") || 0);
-  if (declared > MAX_BYTES) {
-    throw new NaverError(
-      "TOO_LARGE",
-      `파일이 ${(declared / 1048576).toFixed(1)}MB로 너무 큽니다 (한도 ${MAX_BYTES / 1048576}MB).`,
-      { url, bytes: declared }
-    );
+  if (declared > maxBody) {
+    // Reading a 10 MB body only to skip the local route wastes the Worker's
+    // memory and the user's time. Let the caller decide with the size alone.
+    resp.body?.cancel();
+    return { buf: null, contentType, declared };
   }
 
   const buf = new Uint8Array(await resp.arrayBuffer());
@@ -92,20 +92,45 @@ async function fetchBinary(url, referer) {
       { url, bytes: buf.byteLength }
     );
   }
-  return { buf, contentType: resp.headers.get("Content-Type") || "" };
+  return { buf, contentType, declared };
 }
 
 /* ------------------------------------------------------------- inflate */
 
-/** Raw DEFLATE, using the decompressor the runtime already ships. */
-async function inflate(bytes) {
-  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate"));
+async function inflateWith(bytes, format) {
+  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream(format));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+/**
+ * Inflate, forgiving the padding real files carry.
+ *
+ * DecompressionStream refuses a stream with anything after it ("Trailing junk
+ * found after the end of the compressed stream"), and virtually every PDF puts
+ * a newline between the data and its `endstream` keyword. Left unhandled, that
+ * one byte loses the entire stream - which is exactly what it was doing.
+ */
+async function inflate(bytes) {
+  let end = bytes.length;
+  while (end > 0 && (bytes[end - 1] === 0x0a || bytes[end - 1] === 0x0d || bytes[end - 1] === 0x20)) {
+    end--;
+  }
+  const trimmed = bytes.subarray(0, end);
+  try {
+    return await inflateWith(trimmed, "deflate");
+  } catch (e) {
+    // Some producers write headerless DEFLATE, and some streams are simply
+    // truncated. Salvage what a raw inflate can reach before giving up.
+    try {
+      return await inflateWith(trimmed, "deflate-raw");
+    } catch {
+      throw e;
+    }
+  }
+}
+
 async function inflateRaw(bytes) {
-  const stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  return inflateWith(bytes, "deflate-raw");
 }
 
 /* ------------------------------------------------------------------ HWPX */
@@ -116,42 +141,29 @@ async function inflateRaw(bytes) {
  * DecompressionStream do the only hard part.
  */
 export async function readHwpxBytes(buf, url) {
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const sections = [];
-  let i = 0;
-
-  while (i + 30 <= buf.length && dv.getUint32(i, true) === 0x04034b50) {
-    const method = dv.getUint16(i + 8, true);
-    const compSize = dv.getUint32(i + 18, true);
-    const nameLen = dv.getUint16(i + 26, true);
-    const extraLen = dv.getUint16(i + 28, true);
-    const name = new TextDecoder().decode(buf.subarray(i + 30, i + 30 + nameLen));
-    const dataStart = i + 30 + nameLen + extraLen;
-
-    if (!compSize) break; // streamed entry - sizes live in the central directory
-    if (/Contents\/section\d*\.xml$/i.test(name)) {
-      const raw = buf.subarray(dataStart, dataStart + compSize);
-      try {
-        sections.push({ name, bytes: method === 8 ? await inflateRaw(raw) : raw });
-      } catch (e) {
-        throw new NaverError("PARSE_FAILED", `HWPX 압축을 풀지 못했습니다: ${e.message}`, { url, name });
-      }
-    }
-    i = dataStart + compSize;
-  }
+  const files = unzipEntries(buf);
+  const sections = Object.keys(files)
+    .filter((n) => /Contents\/section\d*\.xml$/i.test(n))
+    .sort();
 
   if (!sections.length) {
     throw new NaverError(
       "PARSE_FAILED",
       "HWPX 안에서 본문 파일(Contents/section*.xml)을 찾지 못했습니다.",
-      { url }
+      { url, entries: Object.keys(files).slice(0, 12) }
     );
   }
 
-  sections.sort((a, b) => a.name.localeCompare(b.name));
   const parts = [];
-  for (const s of sections) {
-    const xml = new TextDecoder().decode(s.bytes);
+  for (const name of sections) {
+    const raw = files[name];
+    let bytes;
+    try {
+      bytes = raw.method === 8 ? await inflateRaw(raw.data) : raw.data;
+    } catch (e) {
+      throw new NaverError("PARSE_FAILED", `HWPX 압축을 풀지 못했습니다: ${e.message}`, { url, name });
+    }
+    const xml = new TextDecoder().decode(bytes);
     // <hp:t> carries the runs of visible text; paragraphs end at </hp:p>.
     // Both are matched in one pass so the line breaks land between the runs
     // they separate instead of all collecting at the end.
@@ -166,6 +178,58 @@ export async function readHwpxBytes(buf, url) {
     throw new NaverError("PARSE_FAILED", "HWPX를 열었지만 본문 텍스트가 비어 있습니다.", { url });
   }
   return { text, pages: sections.length, how: "hwpx-zip" };
+}
+
+/**
+ * List a zip's entries from its central directory.
+ *
+ * Walking the local file headers instead looks simpler until a real file
+ * arrives: a directory entry has a zero compressed size, and an entry written
+ * with a data descriptor carries its sizes *after* the data, so both leave the
+ * walk with nowhere to jump to. The central directory at the end of the file
+ * holds every offset and size in one place, which is why it exists.
+ */
+export function unzipEntries(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+  // The end-of-central-directory record sits within the last 64 KB, after a
+  // trailing comment of unknown length - so it has to be searched backwards.
+  let eocd = -1;
+  const from = Math.max(0, buf.length - 66_000);
+  for (let i = buf.length - 22; i >= from; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return {};
+
+  const count = dv.getUint16(eocd + 10, true);
+  let at = dv.getUint32(eocd + 16, true);
+  const out = {};
+  const dec = new TextDecoder();
+
+  for (let n = 0; n < count && at + 46 <= buf.length; n++) {
+    if (dv.getUint32(at, true) !== 0x02014b50) break;
+    const method = dv.getUint16(at + 10, true);
+    const compSize = dv.getUint32(at + 20, true);
+    const nameLen = dv.getUint16(at + 28, true);
+    const extraLen = dv.getUint16(at + 30, true);
+    const commentLen = dv.getUint16(at + 32, true);
+    const localAt = dv.getUint32(at + 42, true);
+    const name = dec.decode(buf.subarray(at + 46, at + 46 + nameLen));
+
+    // The local header repeats the name and extra fields, and its extra field
+    // length can differ from the central one - so read it, do not assume it.
+    if (localAt + 30 <= buf.length && dv.getUint32(localAt, true) === 0x04034b50) {
+      const lNameLen = dv.getUint16(localAt + 26, true);
+      const lExtraLen = dv.getUint16(localAt + 28, true);
+      const dataAt = localAt + 30 + lNameLen + lExtraLen;
+      out[name] = { method, data: buf.subarray(dataAt, dataAt + compSize) };
+    }
+    at += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------- PDF */
@@ -192,18 +256,42 @@ export async function extractPdfStreams(buf) {
   const utf8 = new TextDecoder("utf-8", { fatal: false });
   const pieces = [];
   let streams = 0;
+  let imageStreams = 0;
+  let textOps = 0;
 
-  const re = /stream\r?\n/g;
+  // "endstream" ends with "stream", so an unanchored match finds every stream
+  // twice - once at its start and once at its end. The second, phantom match
+  // reads the wrong object's dictionary and skews every count taken here.
+  const re = /(^|[^a-zA-Z])stream\r?\n/g;
   let m;
   while ((m = re.exec(latin)) !== null) {
-    const start = m.index + m[0].length;
-    const end = latin.indexOf("endstream", start);
+    const at = m.index + m[1].length;
+    const start = at + m[0].length - m[1].length;
+
+    // The stream's dictionary sits between its object header and the stream
+    // itself. Slicing a fixed window backwards instead reaches into whatever
+    // object came before - which made a text stream following an image look
+    // like an image, and threw its text away.
+    const objAt = latin.lastIndexOf(" obj", at);
+    const dictFrom = objAt >= 0 && at - objAt < 8000 ? objAt + 4 : Math.max(0, at - 600);
+    const dict = latin.slice(dictFrom, at);
+    const declared = Number((dict.match(/\/Length\s+(\d+)/) || [])[1] || 0);
+
+    let end = -1;
+    if (declared > 0 && latin.startsWith("endstream", start + declared)) {
+      end = start + declared;
+    } else if (declared > 0 && /^\s{0,4}endstream/.test(latin.slice(start + declared, start + declared + 13))) {
+      end = start + declared;
+    } else {
+      end = latin.indexOf("endstream", start);
+    }
     if (end < 0) continue;
     re.lastIndex = end;
 
-    // The stream's dictionary sits just before it and says how it is encoded.
-    const dict = latin.slice(Math.max(0, m.index - 400), m.index);
-    if (/\/Image|\/DCTDecode|\/JPXDecode|\/CCITTFaxDecode/.test(dict)) continue;
+    if (/\/Image|\/DCTDecode|\/JPXDecode|\/JBIG2Decode|\/CCITTFaxDecode/.test(dict)) {
+      imageStreams++;
+      continue;
+    }
 
     let bytes = buf.subarray(start, end);
     if (/\/FlateDecode/.test(dict)) {
@@ -216,6 +304,7 @@ export async function extractPdfStreams(buf) {
     streams++;
 
     const text = utf8.decode(bytes);
+    textOps += (text.match(/\)\s*Tj|\]\s*TJ/g) || []).length;
     for (const t of text.matchAll(/\(((?:[^()\\]|\\[\s\S])*)\)\s*(?:Tj|TJ|'|")/g)) {
       pieces.push(unescapePdfString(t[1]));
     }
@@ -233,7 +322,7 @@ export async function extractPdfStreams(buf) {
   // Glyph ids decoded as text show up as replacement characters and control
   // bytes. Counting them is how a real extraction is told from noise.
   const junk = (text.match(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
-  return { text, hangul, junk, streams };
+  return { text, hangul, junk, streams, imageStreams, textOps };
 }
 
 /**
@@ -304,6 +393,13 @@ export async function readPdf(url, buf) {
       // text is stored as glyph ids gives itself away: thousands of text
       // operators, a handful of Hangul characters. Either the Hangul is
       // clearly there, or there is none at all and the document is Latin.
+      if (local.textOps === 0 && local.imageStreams > 0) {
+        throw new NaverError(
+          "SCANNED_PDF",
+          `이 PDF는 글자 없이 이미지 ${local.imageStreams}개로만 되어 있습니다. 스캔본이라 텍스트를 뽑을 수 없습니다.`,
+          { url, images: local.imageStreams }
+        );
+      }
       const clean = local.junk < Math.max(8, local.text.length / 40);
       const readable =
         clean &&
@@ -316,6 +412,7 @@ export async function readPdf(url, buf) {
       });
       if (readable) return { text: local.text, pages: local.streams, how: "pdf-streams" };
     } catch (e) {
+      if (e instanceof NaverError && e.kind === "SCANNED_PDF") throw e;
       trace.push({ route: "pdf-streams", result: "failed", message: e.message });
     }
   } else {
@@ -323,10 +420,12 @@ export async function readPdf(url, buf) {
   }
 
   let viaReader = "";
+  let readerFailed = null;
   try {
     viaReader = await readPdfViaReader(url);
     trace.push({ route: "jina-reader", result: viaReader ? "ok" : "empty", message: `${viaReader.length} chars` });
   } catch (e) {
+    readerFailed = e;
     trace.push({ route: "jina-reader", result: "failed", message: e.message });
     if (e instanceof NaverError && e.kind === "BLOCKED") {
       e.detail = { ...(e.detail || {}), trace };
@@ -336,6 +435,17 @@ export async function readPdf(url, buf) {
 
   if (viaReader.length > 200) {
     return { text: viaReader, pages: null, how: "jina-reader" };
+  }
+
+  // Only call it a scan when a route actually looked and found nothing. If the
+  // reader never answered, the honest report is that we could not read it -
+  // saying "this is a scan" would send the user off fixing the wrong thing.
+  if (readerFailed) {
+    throw new NaverError(
+      "UPSTREAM",
+      "이 PDF는 자체 추출로도, 외부 리더로도 읽지 못했습니다. 리더가 응답하지 않아 스캔본인지 여부는 확인되지 않았습니다.",
+      { url, trace }
+    );
   }
 
   throw new NaverError(
@@ -403,8 +513,28 @@ export function readImage(buf, contentType, url) {
  * download links routinely end in `?fileId=` with no extension at all.
  */
 export async function readFile(url, { referer } = {}) {
-  const { buf, contentType } = await fetchBinary(url, referer);
+  const { buf, contentType, declared } = await fetchBinary(url, referer, {
+    maxBody: RAW_ROUTE_LIMIT,
+  });
   let kind = detectKind(url, contentType);
+
+  // Body skipped because the file is large. A PDF is still readable - the
+  // reader fetches it itself - but nothing else here can work without bytes.
+  if (!buf) {
+    if (kind === "pdf") return { type: "text", ...(await readPdf(url, null)) };
+    if (declared > MAX_BYTES) {
+      throw new NaverError(
+        "TOO_LARGE",
+        `파일이 ${(declared / 1048576).toFixed(1)}MB로 너무 큽니다 (한도 ${MAX_BYTES / 1048576}MB).`,
+        { url, bytes: declared }
+      );
+    }
+    throw new NaverError(
+      "TOO_LARGE",
+      `이 형식은 ${(declared / 1048576).toFixed(1)}MB에서 처리할 수 없습니다.`,
+      { url, bytes: declared }
+    );
+  }
 
   // Sniff the magic bytes when neither the URL nor the headers committed.
   if (!kind) {
@@ -413,6 +543,11 @@ export async function readFile(url, { referer } = {}) {
     else if (buf[0] === 0xd0 && buf[1] === 0xcf) kind = "hwp";       // OLE compound
     else if (buf[0] === 0xff && buf[1] === 0xd8) kind = "image";
     else if (buf[0] === 0x89 && buf[1] === 0x50) kind = "image";
+    else if (/^\s*<(?:!doctype|html|\?xml)/i.test(new TextDecoder().decode(buf.subarray(0, 200)))) {
+      // A download link that turned out to be a web page. Say so instead of
+      // refusing it - the caller has an HTML reader and can just use it.
+      kind = "html";
+    }
   }
 
   switch (kind) {
@@ -420,6 +555,7 @@ export async function readFile(url, { referer } = {}) {
     case "hwpx":  return { type: "text", ...(await readHwpxBytes(buf, url)) };
     case "hwp":   return rejectHwp(url);
     case "image": return { type: "image", ...readImage(buf, contentType, url) };
+    case "html":  return { type: "html" };
     default:
       throw new NaverError(
         "UNSUPPORTED_FORMAT",

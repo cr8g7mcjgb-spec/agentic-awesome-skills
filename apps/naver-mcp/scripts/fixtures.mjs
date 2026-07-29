@@ -4,13 +4,15 @@
  * valid file of its format that carries text we can assert on.
  */
 
+import { deflateSync } from "node:zlib";
+
 /**
  * A one-page PDF with a real text layer and a correct xref table.
  *
  * Assembled as bytes rather than as a string so Korean text survives: offsets
  * in the xref table are byte offsets, and one Hangul character is three bytes.
  */
-export function makePdf(text = "SUNEUNG KOREAN 1994-2026 PAST PAPERS") {
+export function makePdf(text = "SUNEUNG KOREAN 1994-2026 PAST PAPERS", { compress = false } = {}) {
   const enc = new TextEncoder();
   const stream = `BT /F1 18 Tf 60 700 Td (${text}) Tj ET`;
   const objects = [
@@ -19,14 +21,29 @@ export function makePdf(text = "SUNEUNG KOREAN 1994-2026 PAST PAPERS") {
     "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
       "/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>",
     "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
-    `<</Length ${enc.encode(stream).length}>>stream\n${stream}\nendstream`,
+    null, // the content stream is spliced in below - it may be binary
   ];
 
+  const streamBytes = compress ? deflateSync(enc.encode(stream)) : enc.encode(stream);
   const parts = [enc.encode("%PDF-1.4\n")];
   let at = parts[0].length;
   const offsets = [];
+
   objects.forEach((body, i) => {
     offsets.push(at);
+    if (body === null) {
+      // Real PDFs put a newline between the data and `endstream`. Keeping it
+      // here is deliberate: a decompressor that rejects trailing bytes fails
+      // on every genuine file, and the fixture has to be able to catch that.
+      const head = enc.encode(
+        `${i + 1} 0 obj\n<</Length ${streamBytes.length}` +
+          `${compress ? "/Filter/FlateDecode" : ""}>>stream\n`
+      );
+      const tail = enc.encode("\nendstream\nendobj\n");
+      parts.push(head, streamBytes, tail);
+      at += head.length + streamBytes.length + tail.length;
+      return;
+    }
     const chunk = enc.encode(`${i + 1} 0 obj\n${body}\nendobj\n`);
     parts.push(chunk);
     at += chunk.length;
@@ -52,10 +69,32 @@ export function makeHwpx(paragraphs = ["2026학년도 수능 국어 영역", "�
   // the same local file headers a real HWPX uses, and this keeps the fixture
   // free of a zip dependency the Worker itself no longer has.
   return zipStored({
+    // A directory entry, which has no data at all. Real HWPX files contain
+    // these, and a reader that walks local headers stops dead on one.
+    "Contents/": null,
     mimetype: "application/hwp+zip",
     "Contents/section0.xml":
       `<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">${body}</hs:sec>`,
   });
+}
+
+/** A PDF that is a photograph of a page: an image, and no text operators. */
+export function makeScannedPdf() {
+  const enc = new TextEncoder();
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new Array(60).fill(0x41), 0xff, 0xd9]);
+  const head = enc.encode(
+    "%PDF-1.4\n1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n" +
+      "2 0 obj\n<</Type/Pages/Kids[3 0 R]/Count 1>>\nendobj\n" +
+      "3 0 obj\n<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
+      "/Resources<</XObject<</Im0 4 0 R>>>>/Contents 5 0 R>>\nendobj\n" +
+      `4 0 obj\n<</Type/XObject/Subtype/Image/Width 8/Height 8/Filter/DCTDecode/Length ${jpeg.length}>>stream\n`
+  );
+  const mid = enc.encode("\nendstream\nendobj\n5 0 obj\n<</Length 26>>stream\nq 612 0 0 792 0 0 cm /Im0 Do Q\nendstream\nendobj\ntrailer\n<</Size 6/Root 1 0 R>>\n%%EOF\n");
+  const out = new Uint8Array(head.length + jpeg.length + mid.length);
+  out.set(head, 0);
+  out.set(jpeg, head.length);
+  out.set(mid, head.length + jpeg.length);
+  return out;
 }
 
 /** A legacy .hwp: only the OLE compound-file signature is needed to identify it. */
@@ -81,7 +120,7 @@ function zipStored(files) {
 
   for (const [name, text] of Object.entries(files)) {
     const nameBytes = enc.encode(name);
-    const data = enc.encode(text);
+    const data = enc.encode(text ?? "");
     const crc = crc32(data);
 
     const lh = new Uint8Array(30 + nameBytes.length);
